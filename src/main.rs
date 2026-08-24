@@ -4,6 +4,8 @@ mod download;
 mod error;
 mod gpu;
 mod hf;
+mod mtls;
+mod openai;
 mod recipe;
 mod runtime;
 mod store;
@@ -42,21 +44,59 @@ async fn main() -> anyhow::Result<()> {
 
     let index = cfg.web_dir.join("index.html");
     let app = Router::new()
-        .nest("/api", api::router(manager))
+        .nest("/api", api::router(manager.clone()))
+        .nest("/v1", openai::router(manager.clone()))
         // Any non-API path falls through to the SPA so client-side routes work.
         .fallback_service(ServeDir::new(&cfg.web_dir).fallback(ServeFile::new(&index)))
         .layer(TraceLayer::new_for_http())
         .layer(CorsLayer::permissive());
 
+    if let Some(ref ts_bind) = cfg.tailscale_bind {
+        let ts_listener = tokio::net::TcpListener::bind(ts_bind).await?;
+        tracing::info!(
+            "Tailscale unauthenticated HTTP portal listening on http://{}",
+            ts_listener.local_addr()?
+        );
+        let ts_app = app.clone();
+        tokio::spawn(async move {
+            if let Err(err) = axum::serve(ts_listener, ts_app).await {
+                tracing::error!(%err, "Tailscale HTTP listener failed");
+            }
+        });
+    }
+
     let listener = tokio::net::TcpListener::bind(&cfg.bind).await?;
-    tracing::info!(
-        "model-manager listening on http://{} (models in {})",
-        listener.local_addr()?,
-        cfg.models_dir().display()
-    );
+    let local_addr = listener.local_addr()?;
+
     if cfg.hf_token.is_none() {
         tracing::info!("no HF_TOKEN set — gated repos will fail to download");
     }
-    axum::serve(listener, app).await?;
+
+    if cfg.is_tls_enabled() {
+        let acceptor = mtls::create_tls_acceptor(&cfg)?;
+        if cfg.is_mtls_enabled() {
+            tracing::info!(
+                "model-manager listening with mTLS authentication on https://{} (models in {})",
+                local_addr,
+                cfg.models_dir().display()
+            );
+        } else {
+            tracing::info!(
+                "model-manager listening with TLS on https://{} (models in {})",
+                local_addr,
+                cfg.models_dir().display()
+            );
+        }
+        mtls::serve_tls(listener, acceptor, app).await?;
+    } else {
+        tracing::info!(
+            "model-manager listening on http://{} (models in {})",
+            local_addr,
+            cfg.models_dir().display()
+        );
+        axum::serve(listener, app).await?;
+    }
+
     Ok(())
 }
+

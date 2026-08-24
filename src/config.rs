@@ -15,6 +15,14 @@ pub struct Config {
     pub web_dir: PathBuf,
     /// Container CLI used to launch/stop/inspect model runtimes (`podman` or `docker`).
     pub container_runtime: String,
+    /// Path to TLS server certificate (PEM).
+    pub tls_cert: Option<PathBuf>,
+    /// Path to TLS server private key (PEM).
+    pub tls_key: Option<PathBuf>,
+    /// Path to CA certificate (PEM) for verifying client certificates (mTLS).
+    pub client_ca: Option<PathBuf>,
+    /// Optional unauthenticated HTTP bind address for Tailscale connections.
+    pub tailscale_bind: Option<String>,
 }
 
 impl Config {
@@ -28,6 +36,14 @@ impl Config {
             .iter()
             .find_map(|k| std::env::var(k).ok())
             .filter(|t| !t.trim().is_empty());
+
+        let tls_cert = std::env::var_os("MODEL_MANAGER_TLS_CERT").map(PathBuf::from);
+        let tls_key = std::env::var_os("MODEL_MANAGER_TLS_KEY").map(PathBuf::from);
+        let client_ca = std::env::var_os("MODEL_MANAGER_CLIENT_CA").map(PathBuf::from);
+        let tailscale_bind = ["MODEL_MANAGER_TAILSCALE_BIND", "MODEL_MANAGER_HTTP_BIND"]
+            .iter()
+            .find_map(|k| std::env::var(k).ok())
+            .filter(|s| !s.trim().is_empty());
 
         Self {
             data_dir,
@@ -45,7 +61,19 @@ impl Config {
                 .ok()
                 .filter(|v| !v.trim().is_empty())
                 .unwrap_or_else(|| "podman".into()),
+            tls_cert,
+            tls_key,
+            client_ca,
+            tailscale_bind,
         }
+    }
+
+    pub fn is_tls_enabled(&self) -> bool {
+        self.tls_cert.is_some() && self.tls_key.is_some()
+    }
+
+    pub fn is_mtls_enabled(&self) -> bool {
+        self.is_tls_enabled() && self.client_ca.is_some()
     }
 
     pub fn models_dir(&self) -> PathBuf {
@@ -94,3 +122,39 @@ pub fn safe_join(base: &Path, rel: &str) -> Option<PathBuf> {
     }
     pushed.then_some(out)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_tls_and_mtls_helpers() {
+        let mut cfg = Config {
+            data_dir: PathBuf::from("/tmp"),
+            bind: "127.0.0.1:8087".into(),
+            hf_token: None,
+            parallel_files: 2,
+            web_dir: PathBuf::from("web/dist"),
+            container_runtime: "podman".into(),
+            tls_cert: None,
+            tls_key: None,
+            client_ca: None,
+            tailscale_bind: None,
+        };
+
+        assert!(!cfg.is_tls_enabled());
+        assert!(!cfg.is_mtls_enabled());
+
+        cfg.tls_cert = Some(PathBuf::from("/etc/certs/server.crt"));
+        assert!(!cfg.is_tls_enabled()); // missing key
+
+        cfg.tls_key = Some(PathBuf::from("/etc/certs/server.key"));
+        assert!(cfg.is_tls_enabled());
+        assert!(!cfg.is_mtls_enabled()); // missing client CA
+
+        cfg.client_ca = Some(PathBuf::from("/etc/certs/ca.crt"));
+        assert!(cfg.is_tls_enabled());
+        assert!(cfg.is_mtls_enabled());
+    }
+}
+
