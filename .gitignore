@@ -1,0 +1,7 @@
+/target
+/web/node_modules
+/web/dist
+.DS_Store
+.direnv
+result
+/web/tsconfig.tsbuildinfo
