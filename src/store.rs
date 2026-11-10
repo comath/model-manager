@@ -1,6 +1,6 @@
 //! The on-disk library: metadata sidecars, scanning, deletion.
 
-use crate::config::Config;
+use crate::config::{Config, Store};
 use crate::error::{AppError, AppResult};
 use crate::hf::{ModelKind, validate_repo_id};
 use crate::recipe;
@@ -20,6 +20,8 @@ pub struct Metadata {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct LibraryEntry {
+    /// Name of the store (see `MODEL_MANAGER_STORES`) this copy lives in.
+    pub store: String,
     pub repo_id: String,
     pub revision: String,
     pub kind: ModelKind,
@@ -66,16 +68,23 @@ pub async fn write_metadata(
 
 pub async fn list(cfg: &Config) -> AppResult<Vec<LibraryEntry>> {
     let mut entries = Vec::new();
-    for kind in [ModelKind::Safetensors, ModelKind::Gguf] {
-        let root = cfg.models_dir().join(kind.as_str());
-        collect(&root, 2, &mut entries).await?;
+    for store in &cfg.stores {
+        for kind in [ModelKind::Safetensors, ModelKind::Gguf] {
+            let root = store.root.join(kind.as_str());
+            collect(store, &root, 2, &mut entries).await?;
+        }
     }
     entries.sort_by_key(|e| std::cmp::Reverse(e.downloaded_at));
     Ok(entries)
 }
 
 /// Walk at most `depth` levels below `dir` looking for metadata sidecars.
-async fn collect(dir: &Path, depth: usize, out: &mut Vec<LibraryEntry>) -> AppResult<()> {
+async fn collect(
+    store: &Store,
+    dir: &Path,
+    depth: usize,
+    out: &mut Vec<LibraryEntry>,
+) -> AppResult<()> {
     let mut stack = vec![(dir.to_path_buf(), depth)];
     while let Some((current, remaining)) = stack.pop() {
         let Ok(mut rd) = tokio::fs::read_dir(&current).await else { continue };
@@ -85,7 +94,7 @@ async fn collect(dir: &Path, depth: usize, out: &mut Vec<LibraryEntry>) -> AppRe
             }
             let path = child.path();
             match read_metadata(&path).await {
-                Some(meta) => out.push(entry_for(&path, meta).await),
+                Some(meta) => out.push(entry_for(store, &path, meta).await),
                 None if remaining > 0 => stack.push((path, remaining - 1)),
                 None => {}
             }
@@ -99,18 +108,32 @@ async fn read_metadata(dir: &Path) -> Option<Metadata> {
     serde_json::from_slice(&body).ok()
 }
 
-/// Metadata for one repo already in the library, keyed by kind + repo id.
-pub async fn get_metadata(cfg: &Config, kind: ModelKind, repo_id: &str) -> AppResult<Metadata> {
+/// Find a repo already in the library: in the named store, or (no name) the first store
+/// that has it. Returns the store, the repo directory and its metadata.
+pub async fn locate<'a>(
+    cfg: &'a Config,
+    store: Option<&str>,
+    kind: ModelKind,
+    repo_id: &str,
+) -> AppResult<(&'a Store, PathBuf, Metadata)> {
     validate_repo_id(repo_id)?;
-    let dir = cfg.repo_dir(kind, repo_id);
-    read_metadata(&dir)
-        .await
-        .ok_or_else(|| AppError::NotFound(format!("{repo_id} is not in the library")))
+    let candidates: Vec<&Store> = match store.map(str::trim).filter(|n| !n.is_empty()) {
+        Some(_) => vec![cfg.store(store)?],
+        None => cfg.stores.iter().collect(),
+    };
+    for store in candidates {
+        let dir = store.repo_dir(kind, repo_id);
+        if let Some(meta) = read_metadata(&dir).await {
+            return Ok((store, dir, meta));
+        }
+    }
+    Err(AppError::NotFound(format!("{repo_id} is not in the library")))
 }
 
-async fn entry_for(path: &Path, meta: Metadata) -> LibraryEntry {
+async fn entry_for(store: &Store, path: &Path, meta: Metadata) -> LibraryEntry {
     let (size_bytes, file_count, estimated_vram_bytes) = dir_stats(path).await;
     LibraryEntry {
+        store: store.name.clone(),
         serve_command: serve_command(path, &meta).await,
         repo_id: meta.repo_id,
         revision: meta.revision,
@@ -174,20 +197,21 @@ async fn dir_stats(root: &Path) -> (u64, usize, u64) {
     (bytes, files, weight_bytes)
 }
 
-pub async fn delete(cfg: &Config, kind: ModelKind, repo_id: &str) -> AppResult<()> {
-    validate_repo_id(repo_id)?;
-    let dir = cfg.repo_dir(kind, repo_id);
-    let models_dir = cfg.models_dir();
-    // Belt and braces: never remove anything outside the models directory.
-    if !dir.starts_with(&models_dir) || dir == models_dir {
+pub async fn delete(
+    cfg: &Config,
+    store: Option<&str>,
+    kind: ModelKind,
+    repo_id: &str,
+) -> AppResult<()> {
+    let (store, dir, _) = locate(cfg, store, kind, repo_id).await?;
+    let kind_root = store.root.join(kind.as_str());
+    // Belt and braces: never remove anything outside this store's per-kind directory.
+    if !dir.starts_with(&kind_root) || dir == kind_root {
         return Err(AppError::BadRequest("refusing to delete outside the models dir".into()));
-    }
-    if !dir.join(META_FILE).exists() {
-        return Err(AppError::NotFound(format!("{repo_id} is not in the library")));
     }
     tokio::fs::remove_dir_all(&dir).await?;
     // Prune empty `<owner>` dirs, but keep the per-kind roots in place.
-    prune_empty_parents(&dir, &models_dir.join(kind.as_str())).await;
+    prune_empty_parents(&dir, &kind_root).await;
     Ok(())
 }
 

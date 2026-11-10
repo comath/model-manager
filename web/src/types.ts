@@ -22,6 +22,8 @@ export interface RepoDetail {
   revision: string;
   kind: ModelKind;
   dest: string;
+  /** Where the repo would land in each configured store; the first is the default. */
+  stores: { name: string; dest: string }[];
 }
 
 export type JobStatus = "queued" | "running" | "completed" | "failed" | "canceled";
@@ -40,6 +42,7 @@ export interface Job {
   repo_id: string;
   revision: string;
   kind: ModelKind;
+  store: string;
   dest: string;
   status: JobStatus;
   error: string | null;
@@ -50,6 +53,7 @@ export interface Job {
 }
 
 export interface LibraryEntry {
+  store: string;
   repo_id: string;
   revision: string;
   kind: ModelKind;
@@ -65,6 +69,7 @@ export interface LibraryEntry {
 export interface ServerConfig {
   data_dir: string;
   models_dir: string;
+  stores: { name: string; root: string }[];
   parallel_files: number;
   has_hf_token: boolean;
 }

@@ -69,11 +69,20 @@ restart still finds them; nothing about running state is tracked separately.
 
 Each model directory carries a `model-manager.json` sidecar; that is what the library scan reads.
 
+### Several stores (e.g. fast and slow disks)
+
+Set `MODEL_MANAGER_STORES=fast=/fast/models,slow=/slow/models` to download into named roots
+instead of `<data>/models`. Each store gets the same `<kind>/<owner>/<name>` layout. The model
+page shows a picker (the last choice is remembered in the browser), the first store is the
+default, and the library lists every store, tagging each entry with where it lives. The same repo
+can sit in more than one store; delete, recipes and launch act on the copy you pick.
+
 ## Configuration
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `MODEL_MANAGER_DATA_DIR` | `~/.model-manager` | Root for downloaded models |
+| `MODEL_MANAGER_STORES` | — | `name=/abs/path,…` download targets; replaces `<data>/models`, first is the default |
 | `MODEL_MANAGER_BIND` | `127.0.0.1:8087` | Listen address |
 | `MODEL_MANAGER_PARALLEL_FILES` | `2` | Files fetched concurrently per job |
 | `MODEL_MANAGER_WEB_DIR` | `web/dist` | Built frontend to serve at `/` |
@@ -85,18 +94,18 @@ Each model directory carries a `model-manager.json` sidecar; that is what the li
 
 | Method | Path | |
 | --- | --- | --- |
-| `GET` | `/api/config` | data dir, token presence, concurrency |
+| `GET` | `/api/config` | data dir, stores, token presence, concurrency |
 | `GET` | `/api/search?q=&kind=&limit=` | Hub search (`kind` = `safetensors` \| `gguf`) |
 | `GET` | `/api/repo/{owner}/{name}?kind=&revision=` | file tree with sizes and a relevance flag |
-| `POST` | `/api/downloads` | `{repo_id, kind, revision?, files:[{path,size}]}` |
+| `POST` | `/api/downloads` | `{repo_id, kind, revision?, store?, files:[{path,size}]}` |
 | `GET` | `/api/downloads` · `/api/downloads/{id}` | job state |
 | `POST` | `/api/downloads/{id}/cancel` | cancel (partial files stay, and resume later) |
 | `DELETE` | `/api/downloads/{id}` | drop a finished job from the list |
-| `GET` | `/api/library` · `DELETE /api/library/{kind}/{owner}/{name}` | on-disk models |
+| `GET` | `/api/library` · `DELETE /api/library/{kind}/{owner}/{name}?store=` | on-disk models |
 | `GET` | `/api/gpus` | discovered GPUs, and which repo (if any) currently holds each one |
-| `GET`/`PUT` | `/api/recipes/{kind}/{owner}/{name}` | load (or default) / save a launch recipe |
+| `GET`/`PUT` | `/api/recipes/{kind}/{owner}/{name}?store=` | load (or default) / save a launch recipe |
 | `GET` | `/api/runtime` | running containers we launched |
-| `POST` | `/api/runtime/launch` | `{kind, repo_id}` — launch using the saved (or default) recipe |
+| `POST` | `/api/runtime/launch` | `{kind, repo_id, store?}` — launch using the saved (or default) recipe |
 | `POST` | `/api/runtime/{name}/stop` · `GET /api/runtime/{name}/logs?tail=` | stop / tail logs |
 | `GET` | `/api/events` | SSE: job progress + library invalidation |
 

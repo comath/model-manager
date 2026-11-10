@@ -5,6 +5,16 @@ import { useJobs } from "../jobs";
 import type { ModelKind, RepoDetail } from "../types";
 import { isKind, KIND_LABEL } from "../types";
 
+const STORE_KEY = "model-manager.store";
+
+function readStoredStore(): string | null {
+  try {
+    return localStorage.getItem(STORE_KEY);
+  } catch {
+    return null;
+  }
+}
+
 export function ModelPage() {
   const params = useParams();
   const repoId = params["*"] ?? "";
@@ -20,6 +30,7 @@ export function ModelPage() {
   const [showAll, setShowAll] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
+  const [store, setStore] = useState<string | null>(readStoredStore);
 
   useEffect(() => {
     let live = true;
@@ -67,6 +78,7 @@ export function ModelPage() {
         repo_id: detail.model.id,
         kind,
         revision: detail.revision,
+        store: (detail.stores.find((s) => s.name === store) ?? detail.stores[0])?.name,
         files: detail.files
           .filter((f) => selected.has(f.path))
           .map((f) => ({ path: f.path, size: f.size })),
@@ -94,6 +106,17 @@ export function ModelPage() {
 
   if (!detail) return <section className="panel">Loading {repoId}…</section>;
 
+  // Last-used store if it still exists, else the server's default (first).
+  const activeStore = detail.stores.find((s) => s.name === store) ?? detail.stores[0];
+  const pickStore = (name: string) => {
+    setStore(name);
+    try {
+      localStorage.setItem(STORE_KEY, name);
+    } catch {
+      // Storage unavailable (private mode); the choice just won't stick.
+    }
+  };
+
   const gguf = kind === "gguf";
   return (
     <section className="stack">
@@ -116,8 +139,24 @@ export function ModelPage() {
             View on HF
           </a>
         </div>
+        {detail.stores.length > 1 && (
+          <div className="kind-picker" role="radiogroup" aria-label="Download to">
+            {detail.stores.map((s) => (
+              <button
+                key={s.name}
+                type="button"
+                role="radio"
+                aria-checked={s.name === activeStore?.name}
+                className={s.name === activeStore?.name ? "active" : ""}
+                onClick={() => pickStore(s.name)}
+              >
+                {s.name}
+              </button>
+            ))}
+          </div>
+        )}
         <p className="muted small">
-          Saving to <code>{detail.dest}</code>
+          Saving to <code>{activeStore?.dest ?? detail.dest}</code>
         </p>
         {gguf && (
           <p className="hint">

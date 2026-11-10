@@ -40,9 +40,15 @@ pub fn router(state: Arc<Manager>) -> Router {
 
 async fn get_config(State(mgr): Ctx) -> Json<serde_json::Value> {
     let cfg = mgr.cfg();
+    let stores: Vec<serde_json::Value> = cfg
+        .stores
+        .iter()
+        .map(|s| json!({ "name": s.name, "root": s.root.display().to_string() }))
+        .collect();
     Json(json!({
         "data_dir": cfg.data_dir.display().to_string(),
-        "models_dir": cfg.models_dir().display().to_string(),
+        "models_dir": cfg.stores[0].root.display().to_string(),
+        "stores": stores,
         "parallel_files": cfg.parallel_files,
         "has_hf_token": cfg.hf_token.is_some(),
     }))
@@ -90,7 +96,12 @@ async fn repo_detail(
         "files": files,
         "revision": revision,
         "kind": kind,
-        "dest": mgr.cfg().repo_dir(kind, &repo_id).display().to_string(),
+        "dest": mgr.cfg().stores[0].repo_dir(kind, &repo_id).display().to_string(),
+        // Where it would land in each store, so the UI can show the chosen one.
+        "stores": mgr.cfg().stores.iter().map(|s| json!({
+            "name": s.name,
+            "dest": s.repo_dir(kind, &repo_id).display().to_string(),
+        })).collect::<Vec<_>>(),
     })))
 }
 
@@ -107,7 +118,17 @@ struct CreateJob {
     kind: String,
     #[serde(default)]
     revision: Option<String>,
+    /// Store to download into (see `MODEL_MANAGER_STORES`); default store if omitted.
+    #[serde(default)]
+    store: Option<String>,
     files: Vec<FileRequest>,
+}
+
+/// `?store=` on library/recipe routes; omitted means the first store holding the repo.
+#[derive(Deserialize, Default)]
+struct StoreParam {
+    #[serde(default)]
+    store: Option<String>,
 }
 
 async fn create_job(
@@ -121,6 +142,7 @@ async fn create_job(
             repo_id: body.repo_id,
             revision: revision_or_main(body.revision),
             kind,
+            store: body.store,
             files: body.files.into_iter().map(|f| (f.path, f.size)).collect(),
         })
         .await?;
@@ -152,9 +174,10 @@ async fn library(State(mgr): Ctx) -> AppResult<Json<serde_json::Value>> {
 async fn delete_model(
     State(mgr): Ctx,
     Path((kind, repo_id)): Path<(String, String)>,
+    Query(p): Query<StoreParam>,
 ) -> AppResult<Json<serde_json::Value>> {
     let kind = parse_kind(&kind)?;
-    store::delete(mgr.cfg(), kind, &repo_id).await?;
+    store::delete(mgr.cfg(), p.store.as_deref(), kind, &repo_id).await?;
     mgr.emit_library_changed();
     Ok(Json(json!({ "ok": true })))
 }
@@ -180,10 +203,10 @@ async fn list_gpus(State(mgr): Ctx) -> AppResult<Json<serde_json::Value>> {
 async fn get_recipe(
     State(mgr): Ctx,
     Path((kind, repo_id)): Path<(String, String)>,
+    Query(p): Query<StoreParam>,
 ) -> AppResult<Json<serde_json::Value>> {
     let kind = parse_kind(&kind)?;
-    let meta = store::get_metadata(mgr.cfg(), kind, &repo_id).await?;
-    let dir = mgr.cfg().repo_dir(kind, &repo_id);
+    let (_, dir, meta) = store::locate(mgr.cfg(), p.store.as_deref(), kind, &repo_id).await?;
     let recipe = recipe::load_or_default(&dir, kind, &repo_id, &meta.files).await;
     let argv = recipe::render_argv(mgr.cfg(), kind, &repo_id, &dir, &recipe)?;
     Ok(Json(json!({
@@ -196,11 +219,11 @@ async fn get_recipe(
 async fn put_recipe(
     State(mgr): Ctx,
     Path((kind, repo_id)): Path<(String, String)>,
+    Query(p): Query<StoreParam>,
     Json(body): Json<Recipe>,
 ) -> AppResult<Json<serde_json::Value>> {
     let kind = parse_kind(&kind)?;
-    store::get_metadata(mgr.cfg(), kind, &repo_id).await?;
-    let dir = mgr.cfg().repo_dir(kind, &repo_id);
+    let (_, dir, _) = store::locate(mgr.cfg(), p.store.as_deref(), kind, &repo_id).await?;
     recipe::save(&dir, &body).await?;
     let argv = recipe::render_argv(mgr.cfg(), kind, &repo_id, &dir, &body)?;
     Ok(Json(json!({ "recipe": body, "preview": recipe::render_shell(&argv) })))
@@ -214,6 +237,8 @@ async fn list_running(State(mgr): Ctx) -> AppResult<Json<serde_json::Value>> {
 struct LaunchRequest {
     kind: String,
     repo_id: String,
+    #[serde(default)]
+    store: Option<String>,
 }
 
 async fn launch(
@@ -221,8 +246,8 @@ async fn launch(
     Json(body): Json<LaunchRequest>,
 ) -> AppResult<Json<serde_json::Value>> {
     let kind = parse_kind(&body.kind)?;
-    let meta = store::get_metadata(mgr.cfg(), kind, &body.repo_id).await?;
-    let dir = mgr.cfg().repo_dir(kind, &body.repo_id);
+    let (_, dir, meta) =
+        store::locate(mgr.cfg(), body.store.as_deref(), kind, &body.repo_id).await?;
     let recipe = recipe::load_or_default(&dir, kind, &body.repo_id, &meta.files).await;
     let container = runtime::launch(mgr.cfg(), kind, &body.repo_id, &dir, &recipe).await?;
     Ok(Json(json!({ "container": container })))

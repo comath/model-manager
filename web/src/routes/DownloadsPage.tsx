@@ -22,7 +22,7 @@ function JobCard({ job }: { job: Job }) {
         <div>
           <h3>{job.repo_id}</h3>
           <p className="muted small">
-            {KIND_LABEL[job.kind]} · {job.files.length} {job.files.length === 1 ? "file" : "files"} · {job.dest}
+            {KIND_LABEL[job.kind]} · {job.files.length} {job.files.length === 1 ? "file" : "files"} · {job.store} · {job.dest}
           </p>
         </div>
         <div className="row-actions">

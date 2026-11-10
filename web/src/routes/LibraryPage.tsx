@@ -27,7 +27,7 @@ export function LibraryPage() {
   const remove = async (entry: LibraryEntry) => {
     if (!confirm(`Delete ${entry.repo_id} (${formatBytes(entry.size_bytes)}) from disk?`)) return;
     try {
-      await api.remove(entry.kind, entry.repo_id);
+      await api.remove(entry.kind, entry.repo_id, entry.store);
       load();
     } catch (err) {
       setError((err as Error).message);
@@ -50,6 +50,8 @@ export function LibraryPage() {
   }
 
   const total = models.reduce((sum, m) => sum + m.size_bytes, 0);
+  // Only label stores when there is more than one to tell apart.
+  const multiStore = new Set(models.map((m) => m.store)).size > 1;
   return (
     <section className="stack">
       <div className="panel-head bare">
@@ -60,12 +62,15 @@ export function LibraryPage() {
       </div>
       <ul className="stack bare">
         {models.map((entry) => {
-          const key = `${entry.kind}/${entry.repo_id}`;
+          const key = `${entry.store}/${entry.kind}/${entry.repo_id}`;
           return (
             <li className="panel" key={key}>
               <div className="panel-head">
                 <div>
-                  <h3>{entry.repo_id}</h3>
+                  <h3>
+                    {entry.repo_id}
+                    {multiStore && <span className="tag">{entry.store}</span>}
+                  </h3>
                   <p className="muted small">
                     {KIND_LABEL[entry.kind]} · {formatBytes(entry.size_bytes)} on disk ·{" "}
                     ~{formatBytes(entry.estimated_vram_bytes)} VRAM · {entry.file_count}{" "}
@@ -100,6 +105,7 @@ export function LibraryPage() {
                 <RecipeEditor
                   kind={entry.kind}
                   repoId={entry.repo_id}
+                  store={entry.store}
                   files={entry.files}
                   estimatedVramBytes={entry.estimated_vram_bytes}
                   onLaunched={() => navigate("/running")}

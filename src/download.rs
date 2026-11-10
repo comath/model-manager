@@ -56,6 +56,7 @@ pub struct Job {
     pub repo_id: String,
     pub revision: String,
     pub kind: ModelKind,
+    pub store: String,
     pub dest: PathBuf,
     created_at: u64,
     files: Vec<Arc<FileTrack>>,
@@ -79,6 +80,7 @@ pub struct JobView {
     pub repo_id: String,
     pub revision: String,
     pub kind: ModelKind,
+    pub store: String,
     pub dest: String,
     pub status: JobStatus,
     pub error: Option<String>,
@@ -106,6 +108,7 @@ impl Job {
             repo_id: self.repo_id.clone(),
             revision: self.revision.clone(),
             kind: self.kind,
+            store: self.store.clone(),
             dest: self.dest.display().to_string(),
             status: *self.status.lock().unwrap(),
             error: self.error.lock().unwrap().clone(),
@@ -135,6 +138,8 @@ pub struct NewJob {
     pub repo_id: String,
     pub revision: String,
     pub kind: ModelKind,
+    /// Store name; `None` means the default store.
+    pub store: Option<String>,
     pub files: Vec<(String, u64)>,
 }
 
@@ -211,7 +216,8 @@ impl Manager {
         if req.files.is_empty() {
             return Err(AppError::BadRequest("no files selected".into()));
         }
-        let dest = self.cfg.repo_dir(req.kind, &req.repo_id);
+        let store = self.cfg.store(req.store.as_deref())?;
+        let dest = store.repo_dir(req.kind, &req.repo_id);
         for (path, _) in &req.files {
             if safe_join(&dest, path).is_none() {
                 return Err(AppError::BadRequest(format!("unsafe file path: {path:?}")));
@@ -223,6 +229,7 @@ impl Manager {
             repo_id: req.repo_id,
             revision: req.revision,
             kind: req.kind,
+            store: store.name.clone(),
             dest,
             created_at: now_ms(),
             files: req

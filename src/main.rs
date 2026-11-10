@@ -30,7 +30,10 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     let cfg = Config::from_env();
-    tokio::fs::create_dir_all(cfg.models_dir()).await?;
+    for store in &cfg.stores {
+        tokio::fs::create_dir_all(&store.root).await?;
+        tracing::info!(store = %store.name, root = %store.root.display(), "model store");
+    }
 
     let http = reqwest::Client::builder()
         .user_agent(concat!("model-manager/", env!("CARGO_PKG_VERSION")))
@@ -78,13 +81,13 @@ async fn main() -> anyhow::Result<()> {
             tracing::info!(
                 "model-manager listening with mTLS authentication on https://{} (models in {})",
                 local_addr,
-                cfg.models_dir().display()
+                cfg.stores[0].root.display()
             );
         } else {
             tracing::info!(
                 "model-manager listening with TLS on https://{} (models in {})",
                 local_addr,
-                cfg.models_dir().display()
+                cfg.stores[0].root.display()
             );
         }
         mtls::serve_tls(listener, acceptor, app).await?;
@@ -92,11 +95,10 @@ async fn main() -> anyhow::Result<()> {
         tracing::info!(
             "model-manager listening on http://{} (models in {})",
             local_addr,
-            cfg.models_dir().display()
+            cfg.stores[0].root.display()
         );
         axum::serve(listener, app).await?;
     }
 
     Ok(())
 }
-

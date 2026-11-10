@@ -46,6 +46,7 @@ export const api = {
     repo_id: string;
     kind: ModelKind;
     revision?: string;
+    store?: string;
     files: { path: string; size: number }[];
   }) =>
     request<{ job: Job }>("/downloads", { method: "POST", body: JSON.stringify(body) }).then(
@@ -58,26 +59,26 @@ export const api = {
 
   library: () => request<{ models: LibraryEntry[] }>("/library").then((r) => r.models),
 
-  remove: (kind: ModelKind, repoId: string) =>
-    request<{ ok: true }>(`/library/${kind}/${repoId}`, { method: "DELETE" }),
+  remove: (kind: ModelKind, repoId: string, store: string) =>
+    request<{ ok: true }>(`/library/${kind}/${repoId}${storeQuery(store)}`, { method: "DELETE" }),
 
   gpus: () => request<{ gpus: GpuInfo[] }>("/gpus").then((r) => r.gpus),
 
-  recipe: (kind: ModelKind, repoId: string) =>
-    request<RecipeResponse>(`/recipes/${kind}/${repoId}`),
+  recipe: (kind: ModelKind, repoId: string, store: string) =>
+    request<RecipeResponse>(`/recipes/${kind}/${repoId}${storeQuery(store)}`),
 
-  saveRecipe: (kind: ModelKind, repoId: string, recipe: Recipe) =>
-    request<RecipeResponse>(`/recipes/${kind}/${repoId}`, {
+  saveRecipe: (kind: ModelKind, repoId: string, store: string, recipe: Recipe) =>
+    request<RecipeResponse>(`/recipes/${kind}/${repoId}${storeQuery(store)}`, {
       method: "PUT",
       body: JSON.stringify(recipe),
     }),
 
   running: () => request<{ containers: RunningContainer[] }>("/runtime").then((r) => r.containers),
 
-  launch: (kind: ModelKind, repoId: string) =>
+  launch: (kind: ModelKind, repoId: string, store: string) =>
     request<{ container: RunningContainer }>("/runtime/launch", {
       method: "POST",
-      body: JSON.stringify({ kind, repo_id: repoId }),
+      body: JSON.stringify({ kind, repo_id: repoId, store }),
     }).then((r) => r.container),
 
   stopContainer: (name: string) =>
@@ -86,6 +87,10 @@ export const api = {
   containerLogs: (name: string, tail = 200) =>
     request<{ logs: string }>(`/runtime/${name}/logs?tail=${tail}`).then((r) => r.logs),
 };
+
+function storeQuery(store: string): string {
+  return `?store=${encodeURIComponent(store)}`;
+}
 
 export function formatBytes(bytes: number): string {
   if (!bytes) return "0 B";

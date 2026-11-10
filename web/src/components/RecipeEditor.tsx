@@ -105,12 +105,14 @@ function LlamaCppFields({
 export function RecipeEditor({
   kind,
   repoId,
+  store,
   files,
   estimatedVramBytes,
   onLaunched,
 }: {
   kind: ModelKind;
   repoId: string;
+  store: string;
   files: string[];
   estimatedVramBytes: number;
   onLaunched?: () => void;
@@ -123,12 +125,12 @@ export function RecipeEditor({
   const [savedAt, setSavedAt] = useState<number | null>(null);
 
   useEffect(() => {
-    api.recipe(kind, repoId).then((r) => {
+    api.recipe(kind, repoId, store).then((r) => {
       setRecipe(r.recipe);
       setPreview(r.preview);
     });
     api.gpus().then(setGpus).catch(() => undefined);
-  }, [kind, repoId]);
+  }, [kind, repoId, store]);
 
   const ggufFiles = files.filter((f) => f.toLowerCase().endsWith(".gguf"));
 
@@ -140,7 +142,7 @@ export function RecipeEditor({
     setBusy("save");
     setError(null);
     try {
-      const res = await api.saveRecipe(kind, repoId, recipe);
+      const res = await api.saveRecipe(kind, repoId, store, recipe);
       setPreview(res.preview);
       setSavedAt(Date.now());
     } catch (err) {
@@ -155,8 +157,8 @@ export function RecipeEditor({
     setBusy("launch");
     setError(null);
     try {
-      await api.saveRecipe(kind, repoId, recipe);
-      await api.launch(kind, repoId);
+      await api.saveRecipe(kind, repoId, store, recipe);
+      await api.launch(kind, repoId, store);
       onLaunched?.();
     } catch (err) {
       setError((err as Error).message);
