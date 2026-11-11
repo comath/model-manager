@@ -12,12 +12,17 @@
 
   outputs =
     {
+      self,
       nixpkgs,
       flake-utils,
       fenix,
       ...
     }:
-    flake-utils.lib.eachDefaultSystem (
+    {
+      # services.modelManager; the package defaults to packages.<system>.default below.
+      nixosModules.default = import ./nix/module.nix self;
+    }
+    // flake-utils.lib.eachDefaultSystem (
       system:
       let
         pkgs = nixpkgs.legacyPackages.${system};
@@ -26,6 +31,9 @@
         nativeToolchain = fenix.packages.${system}.stable.completeToolchain;
       in
       {
+        # Server binary; the built frontend is passthru.web (MODEL_MANAGER_WEB_DIR).
+        packages.default = pkgs.callPackage ./nix/package.nix { };
+
         devShells.default = pkgs.mkShell {
           buildInputs = [
             nativeToolchain

@@ -23,6 +23,32 @@ For a single-process setup, build the frontend once and let axum serve it:
 cd web && pnpm build && cd .. && cargo run   # everything on http://127.0.0.1:8087
 ```
 
+## NixOS
+
+The flake exports `packages.<system>.default` (server; the built frontend is `passthru.web`) and
+`nixosModules.default`, which runs it as a hardened systemd service under a `models` system
+account that owns the store roots:
+
+```nix
+inputs.model-manager.url = "github:comath/model-manager";
+inputs.model-manager.inputs.nixpkgs.follows = "nixpkgs";
+
+# in a nixosSystem:
+imports = [ inputs.model-manager.nixosModules.default ];
+services.modelManager = {
+  enable = true;
+  bind = "0.0.0.0:8087";               # default 127.0.0.1:8087; there is no auth
+  stores = [
+    { name = "fast"; path = "/fast/models"; }
+    { name = "slow"; path = "/slow/models"; }
+  ];
+  environmentFile = "/run/secrets/model-manager.env";   # optional: HF_TOKEN=…
+};
+```
+
+When `web/pnpm-lock.yaml` changes, update the `hash` in `nix/package.nix` (set it to
+`lib.fakeHash`, run `nix build`, copy the hash from the error).
+
 ## What it does
 
 - **Discover** — Hub search filtered to the chosen format, sorted by downloads.
