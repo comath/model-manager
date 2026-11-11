@@ -13,6 +13,21 @@ self:
 
 let
   cfg = config.services.modelManager;
+
+  # Store roots are often separate filesystems (ZFS datasets, mounts); don't create them here,
+  # where a missing mount would silently fill the parent filesystem instead.
+  prepareStores = pkgs.writeShellScript "model-manager-prepare-stores" ''
+    missing=0
+    ${lib.concatMapStrings (s: ''
+      if [ -d ${lib.escapeShellArg (toString s.path)} ]; then
+        ${pkgs.coreutils}/bin/chown ${cfg.user}:${cfg.user} ${lib.escapeShellArg (toString s.path)}
+      else
+        echo "store ${s.name}: ${toString s.path} does not exist (filesystem not mounted or not created?)" >&2
+        missing=1
+      fi
+    '') cfg.stores}
+    exit $missing
+  '';
 in
 {
   options.services.modelManager = {
@@ -99,19 +114,19 @@ in
         Group = cfg.user;
         StateDirectory = "model-manager";
         EnvironmentFile = lib.optional (cfg.environmentFile != null) cfg.environmentFile;
-        # Hand the store roots to the service account (not recursive: existing models keep
-        # their owner). "+" runs this one step as root.
-        ExecStartPre = "+${pkgs.coreutils}/bin/chown ${cfg.user}:${cfg.user} ${
-          lib.escapeShellArgs (map (s: toString s.path) cfg.stores)
-        }";
+        # Check the store roots exist and hand them to the service account (not recursive:
+        # existing models keep their owner). "+" runs this one step as root.
+        ExecStartPre = "+${prepareStores}";
         ExecStart = lib.getExe cfg.package;
         Restart = "on-failure";
-        RestartSec = 5;
+        RestartSec = 30;
         # Downloads stay world-readable (e.g. for read-only NFS exports squashed to nobody).
         UMask = "0022";
 
         ProtectSystem = "strict";
-        ReadWritePaths = map (s: s.path) cfg.stores;
+        # "-": a missing store must not abort namespace setup, or prepareStores never gets to
+        # say which one is missing (the unit would just fail with 226/NAMESPACE).
+        ReadWritePaths = map (s: "-${toString s.path}") cfg.stores;
         ProtectHome = true;
         PrivateTmp = true;
         PrivateDevices = true;
