@@ -9,7 +9,7 @@ export function KindPicker({
   onChange: (kind: ModelKind) => void;
 }) {
   return (
-    <div className="kind-picker" role="radiogroup" aria-label="Model format">
+    <div className="kind-picker" role="radiogroup" aria-label="Download type">
       {KINDS.map((kind) => (
         <button
           key={kind}

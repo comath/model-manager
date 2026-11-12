@@ -1,10 +1,14 @@
-export type ModelKind = "safetensors" | "gguf";
+export type ModelKind = "safetensors" | "gguf" | "dataset";
+
+/** Where a dataset comes from. Models are always HuggingFace. */
+export type Source = "huggingface" | "kaggle" | "github";
 
 export interface ModelSummary {
   id: string;
   downloads: number;
   likes: number;
   pipeline_tag: string | null;
+  description: string | null;
   last_modified: string | null;
   gated: boolean;
   tags: string[];
@@ -21,6 +25,7 @@ export interface RepoDetail {
   files: RepoFile[];
   revision: string;
   kind: ModelKind;
+  source: Source;
   dest: string;
   /** Where the repo would land in each configured store; the first is the default. */
   stores: { name: string; dest: string }[];
@@ -42,6 +47,7 @@ export interface Job {
   repo_id: string;
   revision: string;
   kind: ModelKind;
+  source: Source;
   store: string;
   dest: string;
   status: JobStatus;
@@ -57,6 +63,7 @@ export interface LibraryEntry {
   repo_id: string;
   revision: string;
   kind: ModelKind;
+  source: Source;
   path: string;
   size_bytes: number;
   file_count: number;
@@ -69,9 +76,12 @@ export interface LibraryEntry {
 export interface ServerConfig {
   data_dir: string;
   models_dir: string;
+  datasets_dir: string;
   stores: { name: string; root: string }[];
   parallel_files: number;
   has_hf_token: boolean;
+  has_kaggle_credentials: boolean;
+  has_github_token: boolean;
 }
 
 export interface GpuInfo {
@@ -125,10 +135,35 @@ export interface RunningContainer {
 export const KIND_LABEL: Record<ModelKind, string> = {
   safetensors: "safetensors · vLLM",
   gguf: "GGUF · llama.cpp",
+  dataset: "dataset",
 };
 
-export const KINDS: ModelKind[] = ["safetensors", "gguf"];
+export const KINDS: ModelKind[] = ["safetensors", "gguf", "dataset"];
 
 export function isKind(value: string | null): value is ModelKind {
-  return value === "safetensors" || value === "gguf";
+  return value === "safetensors" || value === "gguf" || value === "dataset";
+}
+
+export const SOURCES: Source[] = ["huggingface", "kaggle", "github"];
+
+export const SOURCE_LABEL: Record<Source, string> = {
+  huggingface: "Hugging Face",
+  kaggle: "Kaggle",
+  github: "GitHub",
+};
+
+export function isSource(value: string | null): value is Source {
+  return value === "huggingface" || value === "kaggle" || value === "github";
+}
+
+/** Link to the repo on its home site. */
+export function sourceUrl(kind: ModelKind, source: Source, id: string): string {
+  if (source === "kaggle") return `https://www.kaggle.com/datasets/${id}`;
+  if (source === "github") return `https://github.com/${id}`;
+  return `https://huggingface.co/${kind === "dataset" ? "datasets/" : ""}${id}`;
+}
+
+/** Query-string suffix selecting a source; empty for models and the default source. */
+export function sourceQuery(kind: ModelKind, source: Source): string {
+  return kind === "dataset" ? `&source=${source}` : "";
 }

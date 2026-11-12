@@ -70,7 +70,8 @@ pub fn default_recipe(kind: ModelKind, repo_id: &str, files: &[String]) -> Recip
                 max_model_len: None,
             },
         },
-        ModelKind::Gguf => {
+        // Datasets are rejected at the API boundary; fall back to the llama.cpp shape.
+        ModelKind::Gguf | ModelKind::Dataset => {
             let gguf_file = files
                 .iter()
                 .filter(|f| f.to_ascii_lowercase().ends_with(".gguf"))

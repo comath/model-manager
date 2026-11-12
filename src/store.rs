@@ -4,6 +4,7 @@ use crate::config::{Config, Store};
 use crate::error::{AppError, AppResult};
 use crate::hf::{ModelKind, validate_repo_id};
 use crate::recipe;
+use crate::source::Source;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -14,6 +15,9 @@ pub struct Metadata {
     pub repo_id: String,
     pub revision: String,
     pub kind: ModelKind,
+    /// Where it was fetched from; only datasets vary. Older sidecars have none.
+    #[serde(default)]
+    pub source: Source,
     pub files: Vec<String>,
     pub downloaded_at: u64,
 }
@@ -25,6 +29,7 @@ pub struct LibraryEntry {
     pub repo_id: String,
     pub revision: String,
     pub kind: ModelKind,
+    pub source: Source,
     pub path: String,
     pub size_bytes: u64,
     pub file_count: usize,
@@ -42,6 +47,7 @@ pub async fn write_metadata(
     repo_id: &str,
     revision: &str,
     kind: ModelKind,
+    source: Source,
     files: &[String],
 ) -> std::io::Result<()> {
     // A repo can be filled in over several jobs (another quant, a missing config),
@@ -58,6 +64,7 @@ pub async fn write_metadata(
         repo_id: repo_id.to_string(),
         revision: revision.to_string(),
         kind,
+        source,
         files: all,
         downloaded_at: crate::download::now_ms(),
     };
@@ -68,10 +75,9 @@ pub async fn write_metadata(
 
 pub async fn list(cfg: &Config) -> AppResult<Vec<LibraryEntry>> {
     let mut entries = Vec::new();
-    for store in &cfg.stores {
-        for kind in [ModelKind::Safetensors, ModelKind::Gguf] {
-            let root = store.root.join(kind.as_str());
-            collect(store, &root, 2, &mut entries).await?;
+    for kind in [ModelKind::Safetensors, ModelKind::Gguf, ModelKind::Dataset] {
+        for store in cfg.stores_for(kind) {
+            collect(store, &store.kind_root(kind), 2, &mut entries).await?;
         }
     }
     entries.sort_by_key(|e| std::cmp::Reverse(e.downloaded_at));
@@ -114,15 +120,16 @@ pub async fn locate<'a>(
     cfg: &'a Config,
     store: Option<&str>,
     kind: ModelKind,
+    source: Source,
     repo_id: &str,
 ) -> AppResult<(&'a Store, PathBuf, Metadata)> {
     validate_repo_id(repo_id)?;
     let candidates: Vec<&Store> = match store.map(str::trim).filter(|n| !n.is_empty()) {
-        Some(_) => vec![cfg.store(store)?],
-        None => cfg.stores.iter().collect(),
+        Some(_) => vec![cfg.store(kind, store)?],
+        None => cfg.stores_for(kind).iter().collect(),
     };
     for store in candidates {
-        let dir = store.repo_dir(kind, repo_id);
+        let dir = store.repo_dir(kind, source, repo_id);
         if let Some(meta) = read_metadata(&dir).await {
             return Ok((store, dir, meta));
         }
@@ -138,11 +145,16 @@ async fn entry_for(store: &Store, path: &Path, meta: Metadata) -> LibraryEntry {
         repo_id: meta.repo_id,
         revision: meta.revision,
         kind: meta.kind,
+        source: meta.source,
         path: path.display().to_string(),
         size_bytes,
         file_count,
         downloaded_at: meta.downloaded_at,
-        estimated_vram_bytes,
+        estimated_vram_bytes: if meta.kind == ModelKind::Dataset {
+            0
+        } else {
+            estimated_vram_bytes
+        },
         files: meta.files,
     }
 }
@@ -152,6 +164,8 @@ async fn serve_command(path: &Path, meta: &Metadata) -> String {
         ModelKind::Safetensors => {
             format!("vllm serve {} --served-model-name {}", path.display(), meta.repo_id)
         }
+        // Nothing to serve; the UI hides the command box for datasets.
+        ModelKind::Dataset => String::new(),
         ModelKind::Gguf => {
             // Point llama.cpp at the first shard; it picks up the rest itself.
             let first = meta
@@ -201,10 +215,11 @@ pub async fn delete(
     cfg: &Config,
     store: Option<&str>,
     kind: ModelKind,
+    source: Source,
     repo_id: &str,
 ) -> AppResult<()> {
-    let (store, dir, _) = locate(cfg, store, kind, repo_id).await?;
-    let kind_root = store.root.join(kind.as_str());
+    let (store, dir, _) = locate(cfg, store, kind, source, repo_id).await?;
+    let kind_root = store.kind_root(kind);
     // Belt and braces: never remove anything outside this store's per-kind directory.
     if !dir.starts_with(&kind_root) || dir == kind_root {
         return Err(AppError::BadRequest("refusing to delete outside the models dir".into()));

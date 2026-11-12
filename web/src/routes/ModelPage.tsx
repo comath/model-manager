@@ -2,8 +2,8 @@ import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router";
 import { api, formatBytes, formatCount } from "../api";
 import { useJobs } from "../jobs";
-import type { ModelKind, RepoDetail } from "../types";
-import { isKind, KIND_LABEL } from "../types";
+import type { ModelKind, RepoDetail, Source } from "../types";
+import { isKind, isSource, KIND_LABEL, SOURCE_LABEL, sourceUrl } from "../types";
 
 const STORE_KEY = "model-manager.store";
 
@@ -21,7 +21,9 @@ export function ModelPage() {
   const [search] = useSearchParams();
   const kind: ModelKind = isKind(search.get("kind"))
     ? (search.get("kind") as ModelKind)
-    : "gguf";
+    : "safetensors";
+  const rawSource = search.get("source");
+  const source: Source = kind === "dataset" && isSource(rawSource) ? rawSource : "huggingface";
   const navigate = useNavigate();
   const { refresh } = useJobs();
 
@@ -37,7 +39,7 @@ export function ModelPage() {
     setDetail(null);
     setError(null);
     api
-      .repo(repoId, kind)
+      .repo(repoId, kind, source)
       .then((data) => {
         if (!live) return;
         setDetail(data);
@@ -48,7 +50,7 @@ export function ModelPage() {
     return () => {
       live = false;
     };
-  }, [repoId, kind]);
+  }, [repoId, kind, source]);
 
   const files = useMemo(
     () => (detail ? detail.files.filter((f) => showAll || f.relevant) : []),
@@ -77,6 +79,7 @@ export function ModelPage() {
       await api.startDownload({
         repo_id: detail.model.id,
         kind,
+        source,
         revision: detail.revision,
         store: (detail.stores.find((s) => s.name === store) ?? detail.stores[0])?.name,
         files: detail.files
@@ -118,6 +121,7 @@ export function ModelPage() {
   };
 
   const gguf = kind === "gguf";
+  const dataset = kind === "dataset";
   return (
     <section className="stack">
       <div className="panel">
@@ -125,18 +129,20 @@ export function ModelPage() {
           <div>
             <h1>{detail.model.id}</h1>
             <p className="muted">
-              {KIND_LABEL[kind]} · revision {detail.revision} ·{" "}
-              {formatCount(detail.model.downloads)} downloads
-              {detail.model.gated && " · gated repo (needs HF_TOKEN)"}
+              {dataset ? `dataset · ${SOURCE_LABEL[source]}` : KIND_LABEL[kind]} · {source === "kaggle" ? "version" : "revision"}{" "}
+              {detail.revision}
+              {detail.model.downloads > 0 && ` · ${formatCount(detail.model.downloads)} downloads`}
+              {detail.model.gated &&
+                (source === "github" ? " · private repo (needs GITHUB_TOKEN)" : " · gated repo (needs HF_TOKEN)")}
             </p>
           </div>
           <a
             className="button ghost"
-            href={`https://huggingface.co/${detail.model.id}`}
+            href={sourceUrl(kind, source, detail.model.id)}
             target="_blank"
             rel="noreferrer"
           >
-            View on HF
+            View on {SOURCE_LABEL[source]}
           </a>
         </div>
         {detail.stores.length > 1 && (
@@ -158,6 +164,7 @@ export function ModelPage() {
         <p className="muted small">
           Saving to <code>{activeStore?.dest ?? detail.dest}</code>
         </p>
+        {detail.model.description && <p className="muted small">{detail.model.description}</p>}
         {gguf && (
           <p className="hint">
             GGUF repos ship one file per quantisation — pick a single quant (e.g. <code>Q4_K_M</code>

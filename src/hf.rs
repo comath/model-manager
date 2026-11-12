@@ -13,6 +13,8 @@ pub enum ModelKind {
     Safetensors,
     /// One or more `*.gguf` shards for llama.cpp.
     Gguf,
+    /// A HuggingFace dataset repo, downloaded as-is into the datasets folder.
+    Dataset,
 }
 
 impl ModelKind {
@@ -20,14 +22,24 @@ impl ModelKind {
         match self {
             ModelKind::Safetensors => "safetensors",
             ModelKind::Gguf => "gguf",
+            ModelKind::Dataset => "dataset",
+        }
+    }
+
+    /// Hub API/URL namespace: models live at `/api/models`, datasets at `/api/datasets`.
+    fn api_segment(self) -> &'static str {
+        match self {
+            ModelKind::Dataset => "datasets",
+            _ => "models",
         }
     }
 
     /// Hub search filter that narrows results to repos containing this flavour.
-    fn search_filter(self) -> &'static str {
+    fn search_filter(self) -> Option<&'static str> {
         match self {
-            ModelKind::Safetensors => "safetensors",
-            ModelKind::Gguf => "gguf",
+            ModelKind::Safetensors => Some("safetensors"),
+            ModelKind::Gguf => Some("gguf"),
+            ModelKind::Dataset => None,
         }
     }
 
@@ -35,6 +47,7 @@ impl ModelKind {
         match s.to_ascii_lowercase().as_str() {
             "safetensors" | "vllm" => Some(ModelKind::Safetensors),
             "gguf" | "llamacpp" | "llama.cpp" => Some(ModelKind::Gguf),
+            "dataset" | "datasets" => Some(ModelKind::Dataset),
             _ => None,
         }
     }
@@ -44,6 +57,7 @@ impl ModelKind {
         let lower = path.to_ascii_lowercase();
         let name = lower.rsplit('/').next().unwrap_or(&lower);
         match self {
+            ModelKind::Dataset => name != ".gitattributes",
             ModelKind::Gguf => lower.ends_with(".gguf"),
             ModelKind::Safetensors => {
                 lower.ends_with(".safetensors")
@@ -77,6 +91,8 @@ pub struct ModelSummary {
     pub last_modified: Option<String>,
     pub gated: bool,
     pub tags: Vec<String>,
+    /// Short blurb (Kaggle title/subtitle, GitHub description); the Hub search has none.
+    pub description: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -107,6 +123,7 @@ impl From<RawModel> for ModelSummary {
             // `gated` is `false` or one of "auto" / "manual".
             gated: !matches!(r.gated, serde_json::Value::Bool(false) | serde_json::Value::Null),
             tags: r.tags,
+            description: None,
         }
     }
 }
@@ -182,19 +199,26 @@ impl HfClient {
         kind: ModelKind,
         limit: usize,
     ) -> AppResult<Vec<ModelSummary>> {
+        let filter = kind.search_filter().map(|f| format!("&filter={f}")).unwrap_or_default();
         let url = format!(
-            "{HF_ENDPOINT}/api/models?search={}&filter={}&sort=downloads&direction=-1&limit={}",
+            "{HF_ENDPOINT}/api/{}?search={}{filter}&sort=downloads&direction=-1&limit={}",
+            kind.api_segment(),
             urlencoding::encode(query.trim()),
-            kind.search_filter(),
             limit.clamp(1, 100),
         );
         let raw: Vec<RawModel> = self.get_json(&url).await?;
         Ok(raw.into_iter().map(ModelSummary::from).collect())
     }
 
-    pub async fn model_info(&self, repo_id: &str, revision: &str) -> AppResult<ModelSummary> {
+    pub async fn model_info(
+        &self,
+        repo_id: &str,
+        revision: &str,
+        kind: ModelKind,
+    ) -> AppResult<ModelSummary> {
         let url = format!(
-            "{HF_ENDPOINT}/api/models/{}/revision/{}",
+            "{HF_ENDPOINT}/api/{}/{}/revision/{}",
+            kind.api_segment(),
             repo_id,
             urlencoding::encode(revision)
         );
@@ -210,7 +234,8 @@ impl HfClient {
         kind: ModelKind,
     ) -> AppResult<Vec<RepoFile>> {
         let url = format!(
-            "{HF_ENDPOINT}/api/models/{}/tree/{}?recursive=true&expand=true",
+            "{HF_ENDPOINT}/api/{}/{}/tree/{}?recursive=true&expand=true",
+            kind.api_segment(),
             repo_id,
             urlencoding::encode(revision)
         );
@@ -228,14 +253,21 @@ impl HfClient {
         Ok(files)
     }
 
-    pub fn resolve_url(&self, repo_id: &str, revision: &str, path: &str) -> String {
+    pub fn resolve_url(
+        &self,
+        kind: ModelKind,
+        repo_id: &str,
+        revision: &str,
+        path: &str,
+    ) -> String {
+        let prefix = if kind == ModelKind::Dataset { "/datasets" } else { "" };
         let encoded_path = path
             .split('/')
             .map(|seg| urlencoding::encode(seg).into_owned())
             .collect::<Vec<_>>()
             .join("/");
         format!(
-            "{HF_ENDPOINT}/{}/resolve/{}/{}",
+            "{HF_ENDPOINT}{prefix}/{}/resolve/{}/{}",
             repo_id,
             urlencoding::encode(revision),
             encoded_path

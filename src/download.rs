@@ -3,6 +3,7 @@
 use crate::config::{Config, safe_join};
 use crate::error::{AppError, AppResult};
 use crate::hf::{HfClient, ModelKind};
+use crate::source::{Hub, Source};
 use crate::store;
 use futures_util::StreamExt;
 use serde::Serialize;
@@ -56,6 +57,7 @@ pub struct Job {
     pub repo_id: String,
     pub revision: String,
     pub kind: ModelKind,
+    pub source: Source,
     pub store: String,
     pub dest: PathBuf,
     created_at: u64,
@@ -80,6 +82,7 @@ pub struct JobView {
     pub repo_id: String,
     pub revision: String,
     pub kind: ModelKind,
+    pub source: Source,
     pub store: String,
     pub dest: String,
     pub status: JobStatus,
@@ -108,6 +111,7 @@ impl Job {
             repo_id: self.repo_id.clone(),
             revision: self.revision.clone(),
             kind: self.kind,
+            source: self.source,
             store: self.store.clone(),
             dest: self.dest.display().to_string(),
             status: *self.status.lock().unwrap(),
@@ -128,6 +132,7 @@ impl Job {
 pub struct Manager {
     cfg: Config,
     hf: HfClient,
+    hub: Hub,
     gpus: Vec<crate::gpu::GpuInfo>,
     jobs: RwLock<Vec<Arc<Job>>>,
     events: broadcast::Sender<String>,
@@ -138,6 +143,7 @@ pub struct NewJob {
     pub repo_id: String,
     pub revision: String,
     pub kind: ModelKind,
+    pub source: Source,
     /// Store name; `None` means the default store.
     pub store: Option<String>,
     pub files: Vec<(String, u64)>,
@@ -146,7 +152,8 @@ pub struct NewJob {
 impl Manager {
     pub fn new(cfg: Config, hf: HfClient, gpus: Vec<crate::gpu::GpuInfo>) -> Self {
         let (events, _) = broadcast::channel(256);
-        Self { cfg, hf, gpus, jobs: RwLock::new(Vec::new()), events }
+        let hub = Hub::new(hf.clone(), &cfg);
+        Self { cfg, hf, hub, gpus, jobs: RwLock::new(Vec::new()), events }
     }
 
     pub fn cfg(&self) -> &Config {
@@ -155,6 +162,10 @@ impl Manager {
 
     pub fn hf(&self) -> &HfClient {
         &self.hf
+    }
+
+    pub fn hub(&self) -> &Hub {
+        &self.hub
     }
 
     pub fn gpus(&self) -> &[crate::gpu::GpuInfo] {
@@ -216,8 +227,8 @@ impl Manager {
         if req.files.is_empty() {
             return Err(AppError::BadRequest("no files selected".into()));
         }
-        let store = self.cfg.store(req.store.as_deref())?;
-        let dest = store.repo_dir(req.kind, &req.repo_id);
+        let store = self.cfg.store(req.kind, req.store.as_deref())?;
+        let dest = store.repo_dir(req.kind, req.source, &req.repo_id);
         for (path, _) in &req.files {
             if safe_join(&dest, path).is_none() {
                 return Err(AppError::BadRequest(format!("unsafe file path: {path:?}")));
@@ -229,6 +240,7 @@ impl Manager {
             repo_id: req.repo_id,
             revision: req.revision,
             kind: req.kind,
+            source: req.source,
             store: store.name.clone(),
             dest,
             created_at: now_ms(),
@@ -318,9 +330,15 @@ impl Manager {
 
         if status == JobStatus::Completed {
             let files: Vec<String> = job.files.iter().map(|f| f.path.clone()).collect();
-            if let Err(err) =
-                store::write_metadata(&job.dest, &job.repo_id, &job.revision, job.kind, &files)
-                    .await
+            if let Err(err) = store::write_metadata(
+                &job.dest,
+                &job.repo_id,
+                &job.revision,
+                job.kind,
+                job.source,
+                &files,
+            )
+            .await
             {
                 tracing::warn!(%err, "could not write model metadata");
             }
@@ -355,8 +373,8 @@ impl Manager {
         ));
         let mut offset = tokio::fs::metadata(&part).await.map(|m| m.len()).unwrap_or(0);
 
-        let url = self.hf.resolve_url(&job.repo_id, &job.revision, &file.path);
-        let mut request = self.hf.authorize(self.hf.http().get(&url));
+        let mut request =
+            self.hub.file_request(job.source, job.kind, &job.repo_id, &job.revision, &file.path);
         if offset > 0 {
             request = request.header(reqwest::header::RANGE, format!("bytes={offset}-"));
         }
@@ -364,9 +382,9 @@ impl Manager {
         let status = response.status();
         if !status.is_success() {
             return Err(match status.as_u16() {
-                401 | 403 => AppError::Upstream(
-                    "access denied — the repo is gated or private; set HF_TOKEN and restart".into(),
-                ),
+                401 | 403 => {
+                    AppError::Upstream(format!("access denied — {}", job.source.auth_hint()))
+                }
                 404 => AppError::NotFound(format!("{} is not in the repo", file.path)),
                 _ => AppError::Upstream(format!("{status} while fetching {}", file.path)),
             });

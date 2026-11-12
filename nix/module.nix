@@ -26,6 +26,10 @@ let
         missing=1
       fi
     '') cfg.stores}
+    # Datasets: hand an existing folder to the service account; otherwise the service creates it.
+    if [ -d ${lib.escapeShellArg (toString cfg.datasetsDir)} ]; then
+      ${pkgs.coreutils}/bin/chown ${cfg.user}:${cfg.user} ${lib.escapeShellArg (toString cfg.datasetsDir)}
+    fi
     exit $missing
   '';
 in
@@ -58,6 +62,12 @@ in
       description = "Where models can be downloaded to (MODEL_MANAGER_STORES). The first is the default.";
     };
 
+    datasetsDir = lib.mkOption {
+      type = lib.types.path;
+      default = "/var/lib/model-manager/datasets";
+      description = "Where datasets are downloaded (MODEL_MANAGER_DATASETS_DIR); laid out as <path>/<source>/<owner>/<name>.";
+    };
+
     bind = lib.mkOption {
       type = lib.types.str;
       default = "127.0.0.1:8087";
@@ -67,7 +77,7 @@ in
     environmentFile = lib.mkOption {
       type = lib.types.nullOr lib.types.path;
       default = null;
-      description = "Optional file with HF_TOKEN=… for gated/private repos.";
+      description = "Optional file with HF_TOKEN=…, KAGGLE_USERNAME=…/KAGGLE_KEY=…, GITHUB_TOKEN=… for gated/private repos.";
     };
 
     user = lib.mkOption {
@@ -102,6 +112,7 @@ in
 
       environment = {
         MODEL_MANAGER_STORES = lib.concatMapStringsSep "," (s: "${s.name}=${s.path}") cfg.stores;
+        MODEL_MANAGER_DATASETS_DIR = toString cfg.datasetsDir;
         MODEL_MANAGER_BIND = cfg.bind;
         MODEL_MANAGER_DATA_DIR = "/var/lib/model-manager";
         MODEL_MANAGER_WEB_DIR = "${cfg.package.web}";
@@ -126,7 +137,7 @@ in
         ProtectSystem = "strict";
         # "-": a missing store must not abort namespace setup, or prepareStores never gets to
         # say which one is missing (the unit would just fail with 226/NAMESPACE).
-        ReadWritePaths = map (s: "-${toString s.path}") cfg.stores;
+        ReadWritePaths = map (p: "-${toString p}") (map (s: s.path) cfg.stores ++ [ cfg.datasetsDir ]);
         ProtectHome = true;
         PrivateTmp = true;
         PrivateDevices = true;

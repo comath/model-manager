@@ -8,6 +8,7 @@ mod mtls;
 mod openai;
 mod recipe;
 mod runtime;
+mod source;
 mod store;
 
 use axum::Router;
@@ -34,6 +35,9 @@ async fn main() -> anyhow::Result<()> {
         tokio::fs::create_dir_all(&store.root).await?;
         tracing::info!(store = %store.name, root = %store.root.display(), "model store");
     }
+
+    tokio::fs::create_dir_all(&cfg.datasets_store.root).await?;
+    tracing::info!(root = %cfg.datasets_store.root.display(), "datasets folder");
 
     let http = reqwest::Client::builder()
         .user_agent(concat!("model-manager/", env!("CARGO_PKG_VERSION")))

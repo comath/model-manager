@@ -4,7 +4,7 @@ import { api, formatBytes } from "../api";
 import { Progress } from "../components/Progress";
 import { useJobActions, useJobs } from "../jobs";
 import type { Job } from "../types";
-import { KIND_LABEL } from "../types";
+import { KIND_LABEL, SOURCE_LABEL } from "../types";
 
 function JobCard({ job }: { job: Job }) {
   const { cancel, forget } = useJobActions();
@@ -22,7 +22,7 @@ function JobCard({ job }: { job: Job }) {
         <div>
           <h3>{job.repo_id}</h3>
           <p className="muted small">
-            {KIND_LABEL[job.kind]} · {job.files.length} {job.files.length === 1 ? "file" : "files"} · {job.store} · {job.dest}
+            {job.kind === "dataset" ? `dataset · ${SOURCE_LABEL[job.source]}` : KIND_LABEL[job.kind]} · {job.files.length} {job.files.length === 1 ? "file" : "files"} · {job.store} · {job.dest}
           </p>
         </div>
         <div className="row-actions">

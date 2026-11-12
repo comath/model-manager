@@ -103,11 +103,31 @@ page shows a picker (the last choice is remembered in the browser), the first st
 default, and the library lists every store, tagging each entry with where it lives. The same repo
 can sit in more than one store; delete, recipes and launch act on the copy you pick.
 
+### Datasets
+
+Pick the **dataset** tab on the discover page, then a source: **Hugging Face**, **Kaggle** or
+**GitHub**. Files land in a separate datasets folder (`MODEL_MANAGER_DATASETS_DIR`, default
+`<data>/datasets`) as `<source>/<owner>/<name>`, independent of the model stores. Datasets show up
+in the library alongside models (without a container recipe).
+
+- **Hugging Face** — dataset repos; `HF_TOKEN` for gated ones.
+- **Kaggle** — public datasets work without credentials. For private ones set `KAGGLE_USERNAME` +
+  `KAGGLE_KEY` (or `KAGGLE_API_TOKEN`); `~/.kaggle/kaggle.json` is also read. The revision is the
+  dataset version number.
+- **GitHub** — any repo, treated as a dataset (search is by stars). Files are fetched from
+  `raw.githubusercontent.com` at the repo's default branch. Set `GITHUB_TOKEN` (or `GH_TOKEN`) for
+  private repos and to lift the 10 requests/minute unauthenticated search limit.
+
+With the NixOS module, put these in the `environmentFile`.
+
 ## Configuration
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `MODEL_MANAGER_DATA_DIR` | `~/.model-manager` | Root for downloaded models |
+| `MODEL_MANAGER_DATASETS_DIR` | `<data>/datasets` | Absolute path where datasets are downloaded (`<source>/<owner>/<name>`) |
+| `KAGGLE_USERNAME` + `KAGGLE_KEY`, or `KAGGLE_API_TOKEN` | — | Kaggle credentials (optional for public datasets) |
+| `GITHUB_TOKEN` / `GH_TOKEN` | — | GitHub token (optional) |
 | `MODEL_MANAGER_STORES` | — | `name=/abs/path,…` download targets; replaces `<data>/models`, first is the default |
 | `MODEL_MANAGER_BIND` | `127.0.0.1:8087` | Listen address |
 | `MODEL_MANAGER_PARALLEL_FILES` | `2` | Files fetched concurrently per job |

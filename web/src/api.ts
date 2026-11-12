@@ -9,7 +9,9 @@ import type {
   RepoDetail,
   RunningContainer,
   ServerConfig,
+  Source,
 } from "./types";
+import { sourceQuery } from "./types";
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`/api${path}`, {
@@ -29,15 +31,15 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 export const api = {
   config: () => request<ServerConfig>("/config"),
 
-  search: (q: string, kind: ModelKind, signal?: AbortSignal) =>
+  search: (q: string, kind: ModelKind, source: Source, signal?: AbortSignal) =>
     request<{ models: ModelSummary[] }>(
-      `/search?kind=${kind}&limit=40&q=${encodeURIComponent(q)}`,
+      `/search?kind=${kind}${sourceQuery(kind, source)}&limit=40&q=${encodeURIComponent(q)}`,
       { signal },
     ).then((r) => r.models),
 
-  repo: (repoId: string, kind: ModelKind, revision?: string) =>
+  repo: (repoId: string, kind: ModelKind, source: Source, revision?: string) =>
     request<RepoDetail>(
-      `/repo/${repoId}?kind=${kind}${revision ? `&revision=${encodeURIComponent(revision)}` : ""}`,
+      `/repo/${repoId}?kind=${kind}${sourceQuery(kind, source)}${revision ? `&revision=${encodeURIComponent(revision)}` : ""}`,
     ),
 
   jobs: () => request<{ jobs: Job[] }>("/downloads").then((r) => r.jobs),
@@ -45,11 +47,18 @@ export const api = {
   startDownload: (body: {
     repo_id: string;
     kind: ModelKind;
+    source?: Source;
     revision?: string;
     store?: string;
     files: { path: string; size: number }[];
   }) =>
     request<{ job: Job }>("/downloads", { method: "POST", body: JSON.stringify(body) }).then(
+      (r) => r.job,
+    ),
+
+  /** Resolve `owner/name` or a repo URL and download everything in it. */
+  clone: (body: { repo: string; kind?: ModelKind; source?: Source; revision?: string; store?: string }) =>
+    request<{ job: Job }>("/clone", { method: "POST", body: JSON.stringify(body) }).then(
       (r) => r.job,
     ),
 
@@ -59,8 +68,10 @@ export const api = {
 
   library: () => request<{ models: LibraryEntry[] }>("/library").then((r) => r.models),
 
-  remove: (kind: ModelKind, repoId: string, store: string) =>
-    request<{ ok: true }>(`/library/${kind}/${repoId}${storeQuery(store)}`, { method: "DELETE" }),
+  remove: (kind: ModelKind, repoId: string, store: string, source: Source) =>
+    request<{ ok: true }>(`/library/${kind}/${repoId}${storeQuery(store)}${sourceQuery(kind, source)}`, {
+      method: "DELETE",
+    }),
 
   gpus: () => request<{ gpus: GpuInfo[] }>("/gpus").then((r) => r.gpus),
 
