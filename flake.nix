@@ -33,6 +33,8 @@
       {
         # Server binary; the built frontend is passthru.web (MODEL_MANAGER_WEB_DIR).
         packages.default = pkgs.callPackage ./nix/package.nix { };
+        # Dataset normalizer manager (services.modelManager.normalizer).
+        packages.normalize-agent = pkgs.callPackage ./normalize_agent/package.nix { };
 
         devShells.default = pkgs.mkShell {
           buildInputs = [

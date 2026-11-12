@@ -34,6 +34,8 @@ let
   '';
 in
 {
+  imports = [ (import ../normalize_agent/module.nix self) ];
+
   options.services.modelManager = {
     enable = lib.mkEnableOption "model-manager, the Hugging Face model downloader";
 
@@ -72,6 +74,13 @@ in
       type = lib.types.str;
       default = "127.0.0.1:8087";
       description = "Listen address (MODEL_MANAGER_BIND).";
+    };
+
+    datasetHook = lib.mkOption {
+      type = lib.types.nullOr lib.types.str;
+      default = null;
+      example = "http://127.0.0.1:8088/jobs";
+      description = "URL POSTed {source, repo_id, revision, path} after each completed dataset download (MODEL_MANAGER_DATASET_HOOK). Set automatically by `normalizer.enable`.";
     };
 
     environmentFile = lib.mkOption {
@@ -118,6 +127,9 @@ in
         MODEL_MANAGER_WEB_DIR = "${cfg.package.web}";
         HOME = "/var/lib/model-manager";
         RUST_LOG = "model_manager=info,tower_http=warn";
+      }
+      // lib.optionalAttrs (cfg.datasetHook != null) {
+        MODEL_MANAGER_DATASET_HOOK = cfg.datasetHook;
       };
 
       serviceConfig = {

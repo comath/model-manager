@@ -97,6 +97,9 @@ pub struct Config {
     pub client_ca: Option<PathBuf>,
     /// Optional unauthenticated HTTP bind address for Tailscale connections.
     pub tailscale_bind: Option<String>,
+    /// URL POSTed `{source, repo_id, revision, path}` after each completed dataset download
+    /// (`MODEL_MANAGER_DATASET_HOOK`), e.g. the normalize-agent manager's `/jobs`.
+    pub dataset_hook: Option<String>,
 }
 
 impl Config {
@@ -161,6 +164,7 @@ impl Config {
             tls_key,
             client_ca,
             tailscale_bind,
+            dataset_hook: env_nonempty("MODEL_MANAGER_DATASET_HOOK"),
         }
     }
 

@@ -120,12 +120,17 @@ in the library alongside models (without a container recipe).
 
 With the NixOS module, put these in the `environmentFile`.
 
+Set `MODEL_MANAGER_DATASET_HOOK` to have each finished dataset download POSTed somewhere; the
+[normalize agent](normalize_agent/README.md) uses it to turn datasets into parquet under
+`<datasets>/normalized/`.
+
 ## Configuration
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `MODEL_MANAGER_DATA_DIR` | `~/.model-manager` | Root for downloaded models |
 | `MODEL_MANAGER_DATASETS_DIR` | `<data>/datasets` | Absolute path where datasets are downloaded (`<source>/<owner>/<name>`) |
+| `MODEL_MANAGER_DATASET_HOOK` | — | URL POSTed `{source, repo_id, revision, path}` after each completed dataset download |
 | `KAGGLE_USERNAME` + `KAGGLE_KEY`, or `KAGGLE_API_TOKEN` | — | Kaggle credentials (optional for public datasets) |
 | `GITHUB_TOKEN` / `GH_TOKEN` | — | GitHub token (optional) |
 | `MODEL_MANAGER_STORES` | — | `name=/abs/path,…` download targets; replaces `<data>/models`, first is the default |

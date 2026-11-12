@@ -343,9 +343,39 @@ impl Manager {
                 tracing::warn!(%err, "could not write model metadata");
             }
             self.emit_library_changed();
+            if job.kind == ModelKind::Dataset {
+                self.notify_dataset_hook(&job);
+            }
         }
         self.emit_job(&job);
         tracing::info!(job = %job.id, repo = %job.repo_id, ?status, "job finished");
+    }
+
+    /// Tell `MODEL_MANAGER_DATASET_HOOK` (if set) that a dataset finished downloading.
+    /// Fire-and-forget: a failing hook is logged, never fails the download.
+    fn notify_dataset_hook(&self, job: &Job) {
+        let Some(url) = self.cfg.dataset_hook.clone() else { return };
+        let body = serde_json::json!({
+            "source": job.source.as_str(),
+            "repo_id": job.repo_id,
+            "revision": job.revision,
+            "path": job.dest.display().to_string(),
+        });
+        let request = self.hf.http().post(&url).json(&body).timeout(Duration::from_secs(15));
+        let repo = job.repo_id.clone();
+        tokio::spawn(async move {
+            match request.send().await {
+                Ok(resp) if resp.status().is_success() => {
+                    tracing::info!(%repo, "dataset hook notified");
+                }
+                Ok(resp) => {
+                    let status = resp.status();
+                    let text = resp.text().await.unwrap_or_default();
+                    tracing::warn!(%repo, %status, %text, "dataset hook rejected the download");
+                }
+                Err(err) => tracing::warn!(%repo, %err, "dataset hook unreachable"),
+            }
+        });
     }
 
     /// Fetch one file, resuming from a `.part` sidecar when one is present.

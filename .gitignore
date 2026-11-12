@@ -5,3 +5,4 @@
 .direnv
 result
 /web/tsconfig.tsbuildinfo
+/normalize_agent/target
