@@ -34,7 +34,7 @@ let
   '';
 in
 {
-  imports = [ (import ../normalize_agent/module.nix self) ];
+  imports = [ (import ../manage_agent/module.nix self) ];
 
   options.services.modelManager = {
     enable = lib.mkEnableOption "model-manager, the Hugging Face model downloader";

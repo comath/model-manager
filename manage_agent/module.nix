@@ -1,6 +1,6 @@
 # NixOS module: `services.modelManager.normalizer`, imported by nix/module.nix.
 #
-# Runs the normalize-agent manager next to model-manager and points model-manager's dataset hook
+# Runs manage-agent next to model-manager and points model-manager's dataset hook
 # at it. It runs as root: it drives Incus (incus-admin is root-equivalent anyway) and hands the
 # agent's output, written by the container's root, over to the models account.
 self:
@@ -15,6 +15,9 @@ let
   mm = config.services.modelManager;
   cfg = mm.normalizer;
   normalizedDir = "${toString mm.datasetsDir}/normalized";
+  incusPkg = config.virtualisation.incus.clientPackage or config.virtualisation.incus.package;
+  # `local:normalize-agent` -> the alias the image is imported under.
+  imageAlias = lib.removePrefix "local:" cfg.image;
 in
 {
   options.services.modelManager.normalizer = {
@@ -22,9 +25,25 @@ in
 
     package = lib.mkOption {
       type = lib.types.package;
-      default = self.packages.${pkgs.stdenv.hostPlatform.system}.normalize-agent;
-      defaultText = lib.literalExpression "model-manager.packages.\${system}.normalize-agent";
-      description = "The normalize-agent manager package.";
+      default = self.packages.${pkgs.stdenv.hostPlatform.system}.manage-agent;
+      defaultText = lib.literalExpression "model-manager.packages.\${system}.manage-agent";
+      description = "The manage-agent package.";
+    };
+
+    imagePackage = lib.mkOption {
+      type = lib.types.package;
+      default = self.packages.${pkgs.stdenv.hostPlatform.system}.normalize-agent-image;
+      defaultText = lib.literalExpression "model-manager.packages.\${system}.normalize-agent-image";
+      description = "The Nix-built OCI image (docker archive) the agent runs in.";
+    };
+
+    importImage = lib.mkOption {
+      type = lib.types.bool;
+      default = true;
+      description = ''
+        Convert `imagePackage` to an Incus image and import it under the alias in `image`
+        whenever the package changes. Disable to supply the image yourself.
+      '';
     };
 
     bind = lib.mkOption {
@@ -35,8 +54,8 @@ in
 
     image = lib.mkOption {
       type = lib.types.str;
-      example = "local:normalize-agent";
-      description = "Incus image the agent runs in (must contain `command`).";
+      default = "local:normalize-agent";
+      description = "Incus image the agent runs in (must contain `command`). The default is the one `importImage` creates.";
     };
 
     command = lib.mkOption {
@@ -106,6 +125,50 @@ in
 
     services.modelManager.datasetHook = lib.mkDefault "http://${cfg.bind}/jobs";
 
+    # OCI -> Incus: unpack the docker archive's layers into a rootfs and import it as a container
+    # image. (The image's PID 1 just sleeps; manage-agent `incus exec`s the agent into it.)
+    systemd.services.normalize-agent-image = lib.mkIf cfg.importImage {
+      description = "Import the normalize-agent OCI image into Incus";
+      wantedBy = [ "multi-user.target" ];
+      wants = [ "incus.service" ];
+      after = [ "incus.service" ];
+      before = [ "normalize-agent.service" ];
+      path = [
+        incusPkg
+        pkgs.skopeo
+        pkgs.umoci
+        pkgs.gnutar
+        pkgs.coreutils
+      ];
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+        StateDirectory = "normalize-agent";
+      };
+      script = ''
+        stamp=/var/lib/normalize-agent/image-stamp
+        if [ "$(cat "$stamp" 2>/dev/null)" = ${lib.escapeShellArg "${cfg.imagePackage}"} ] \
+           && incus image info ${lib.escapeShellArg imageAlias} >/dev/null 2>&1; then
+          exit 0
+        fi
+        work=$(mktemp -d -p /var/lib/normalize-agent image.XXXXXX)
+        trap 'rm -rf "$work"' EXIT
+        skopeo copy docker-archive:${cfg.imagePackage} oci:"$work/oci":latest
+        umoci unpack --image "$work/oci":latest "$work/bundle"
+        cat > "$work/bundle/metadata.yaml" <<EOF
+        architecture: ${pkgs.stdenv.hostPlatform.parsed.cpu.name}
+        creation_date: $(date +%s)
+        properties:
+          description: normalize-agent (Nix-built OCI image)
+          os: nixos
+        EOF
+        tar -C "$work/bundle" --numeric-owner -cf "$work/image.tar" metadata.yaml rootfs
+        incus image delete ${lib.escapeShellArg imageAlias} 2>/dev/null || true
+        incus image import "$work/image.tar" --alias ${lib.escapeShellArg imageAlias}
+        echo -n ${lib.escapeShellArg "${cfg.imagePackage}"} > "$stamp"
+      '';
+    };
+
     systemd.services.normalize-agent = {
       description = "normalize-agent (dataset → parquet agent per model-manager download)";
       wantedBy = [ "multi-user.target" ];
@@ -113,7 +176,9 @@ in
       after = [
         "incus.service"
         "model-manager.service"
-      ];
+      ]
+      ++ lib.optional cfg.importImage "normalize-agent-image.service";
+      requires = lib.optional cfg.importImage "normalize-agent-image.service";
       unitConfig.RequiresMountsFor = [ (toString mm.datasetsDir) ];
       environment.HOME = "/var/lib/normalize-agent";
 
@@ -138,7 +203,7 @@ in
             "--owner"
             "${mm.user}:${mm.user}"
             "--incus"
-            "${config.virtualisation.incus.clientPackage or config.virtualisation.incus.package}/bin/incus"
+            "${incusPkg}/bin/incus"
           ]
           ++ lib.concatMap (p: [
             "--profile"

@@ -277,6 +277,7 @@ mod tests {
             tls_key: None,
             client_ca: None,
             tailscale_bind: None,
+            dataset_hook: None,
         };
 
         assert!(!cfg.is_tls_enabled());
@@ -328,6 +329,7 @@ mod tests {
             tls_key: None,
             client_ca: None,
             tailscale_bind: None,
+            dataset_hook: None,
         };
         assert_eq!(cfg.store(crate::hf::ModelKind::Gguf, None).unwrap().name, "fast");
         assert_eq!(cfg.store(crate::hf::ModelKind::Gguf, Some("")).unwrap().name, "fast");

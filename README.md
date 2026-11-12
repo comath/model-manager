@@ -13,14 +13,14 @@ nix develop            # rust toolchain + node + pnpm
 Two terminals, both inside the dev shell:
 
 ```bash
-cargo run                          # API on http://127.0.0.1:8087
+cargo run -p model-manager           # API on http://127.0.0.1:8087
 cd web && pnpm install && pnpm dev # UI on http://127.0.0.1:5173 (proxies /api)
 ```
 
 For a single-process setup, build the frontend once and let axum serve it:
 
 ```bash
-cd web && pnpm build && cd .. && cargo run   # everything on http://127.0.0.1:8087
+cd web && pnpm build && cd .. && cargo run -p model-manager   # everything on http://127.0.0.1:8087
 ```
 
 ## NixOS
@@ -121,7 +121,7 @@ in the library alongside models (without a container recipe).
 With the NixOS module, put these in the `environmentFile`.
 
 Set `MODEL_MANAGER_DATASET_HOOK` to have each finished dataset download POSTed somewhere; the
-[normalize agent](normalize_agent/README.md) uses it to turn datasets into parquet under
+[manage-agent](manage_agent/README.md) and the [normalize agent](normalize_agent/README.md) uses it to turn datasets into parquet under
 `<datasets>/normalized/`.
 
 ## Configuration

@@ -5,6 +5,7 @@
 {
   lib,
   rustPlatform,
+  callPackage,
   stdenvNoCC,
   nodejs,
   pnpm_11,
@@ -14,7 +15,7 @@
 
 let
   root = ../.;
-  version = (lib.importTOML ../Cargo.toml).package.version;
+  version = (lib.importTOML ../model-manager/Cargo.toml).package.version;
 
   # Only what the build needs; keeps target/, node_modules and local builds out of the store.
   webFiles = lib.fileset.difference (root + "/web") (
@@ -58,15 +59,16 @@ in
 rustPlatform.buildRustPackage {
   pname = "model-manager";
   inherit version;
-  src = lib.fileset.toSource {
-    inherit root;
-    fileset = lib.fileset.unions [
-      (root + "/Cargo.toml")
-      (root + "/Cargo.lock")
-      (root + "/src")
-    ];
-  };
+  src = callPackage ./workspace-src.nix { };
   cargoLock.lockFile = ../Cargo.lock;
+  cargoBuildFlags = [
+    "-p"
+    "model-manager"
+  ];
+  cargoTestFlags = [
+    "-p"
+    "model-manager"
+  ];
 
   passthru = { inherit web; };
 

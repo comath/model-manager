@@ -1,210 +1,161 @@
-//! normalize-agent manager: turns finished dataset downloads into normalized parquet.
+//! normalize-dataset: the agent that runs inside the container, once per dataset.
 //!
-//! model-manager POSTs every completed dataset download to /jobs. For each job this starts a
-//! dedicated, ephemeral Incus container that sees exactly two folders:
-//!
-//!     /data/raw   the downloaded dataset, <datasets>/<source>/<owner>/<name>    (read-only)
-//!     /data/out   a fresh, empty staging folder                                 (read/write)
-//!
-//! and runs the agent command in it. The agent never sees other datasets, other normalized
-//! output, or the previous normalized copy of this dataset. When it exits 0, the container is
-//! deleted, the staging folder is checked (README.md plus at least one valid parquet file; no
-//! symlinks, special files or hard links; modes reset, ownership handed to --owner) and moved
-//! into place:
-//!
-//!     <datasets>/normalized/<source>/<owner>/<name>/
-//!
-//! Logs go to <datasets>/normalized/.logs/<job id>.log, staging to <datasets>/normalized/.work/.
-//! The incus CLI does the container work.
+//! Reads RAW_DIR (read-only), writes a parquet package with README.md and schema.md into OUT_DIR,
+//! talking to an OpenAI-compatible endpoint (OPENAI_BASE_URL / OPENAI_MODEL / OPENAI_API_KEY).
+//! Exit 0: the deliverable passed validation. Anything else fails the job.
 
-mod check;
-mod manager;
-mod server;
+mod llm;
+mod tools;
+mod validate;
 
-use std::{
-    collections::BTreeMap,
-    path::{Path, PathBuf},
-    sync::Arc,
-};
+use std::{path::PathBuf, process::ExitCode};
 
-use anyhow::{Context, Result, bail};
-use clap::Parser;
-use tracing::{info, warn};
+use anyhow::{Context, Result};
+use serde_json::{Value, json};
+use tools::{Ctx, Outcome, truncate};
 
-pub const SOURCES: [&str; 3] = ["huggingface", "kaggle", "github"];
-pub const NORMALIZED: &str = "normalized";
-pub const WORK: &str = ".work";
-pub const LOGS: &str = ".logs";
-pub const STATUS_FILE: &str = ".normalize.json";
-pub const CONTAINER_PREFIX: &str = "mm-normalize-";
-pub const RAW_MOUNT: &str = "/data/raw";
-pub const OUT_MOUNT: &str = "/data/out";
-pub const MAX_BODY: usize = 64 * 1024;
-pub const KEEP_JOBS: usize = 200;
-pub const INCUS_STEP_TIMEOUT_SECS: u64 = 300;
+const SYSTEM_PROMPT: &str = include_str!("prompt.md");
+const MAX_FINISH_REJECTIONS: u32 = 6;
+const MAX_NUDGES: u32 = 4;
 
-pub type Owner = Option<(u32, u32)>;
-
-pub struct Settings {
-    pub datasets_root: PathBuf,
-    pub image: String,
-    pub command: Vec<String>,
-    pub profiles: Vec<String>,
-    pub container_config: BTreeMap<String, String>,
-    pub env: BTreeMap<String, String>,
-    pub timeout: u64,
-    pub owner: Owner,
-    pub incus: String,
-    pub keep_failed: bool,
+fn env_path(name: &str, default: &str) -> PathBuf {
+    PathBuf::from(std::env::var(name).unwrap_or_else(|_| default.to_string()))
 }
 
-impl Settings {
-    pub fn normalized(&self) -> PathBuf {
-        self.datasets_root.join(NORMALIZED)
-    }
-}
-
-fn parse_pair(s: &str) -> Result<(String, String), String> {
-    match s.split_once('=') {
-        Some((k, v)) if !k.is_empty() => Ok((k.to_string(), v.to_string())),
-        _ => Err(format!("expected KEY=VALUE, got {s:?}")),
-    }
-}
-
-#[derive(Parser)]
-#[command(version, about)]
-struct Args {
-    /// Listen address (host:port)
-    #[arg(long, default_value = "127.0.0.1:8088")]
-    bind: String,
-    /// model-manager's datasets folder (MODEL_MANAGER_DATASETS_DIR)
-    #[arg(long)]
-    datasets_root: PathBuf,
-    /// Incus image the agent runs in
-    #[arg(long)]
-    image: String,
-    /// Agent command inside the container (whitespace-separated argv)
-    #[arg(long, default_value = "normalize-dataset")]
-    command: String,
-    /// Incus profile for the container (repeatable; default: Incus' default)
-    #[arg(long = "profile")]
-    profiles: Vec<String>,
-    /// Incus instance config, e.g. limits.memory=32GiB (repeatable)
-    #[arg(long = "config", value_name = "KEY=VALUE", value_parser = parse_pair)]
-    config: Vec<(String, String)>,
-    /// Environment for the agent (repeatable)
-    #[arg(long = "env", value_name = "KEY=VALUE", value_parser = parse_pair)]
-    env: Vec<(String, String)>,
-    /// Pass this variable from the manager's environment to the agent (repeatable)
-    #[arg(long = "forward-env", value_name = "NAME")]
-    forward_env: Vec<String>,
-    /// Seconds an agent run may take
-    #[arg(long, default_value_t = 4 * 3600)]
-    timeout: u64,
-    /// Agents running at once
-    #[arg(long, default_value_t = 1)]
-    workers: usize,
-    /// user[:group] that owns the normalized output
-    #[arg(long)]
-    owner: Option<String>,
-    /// incus CLI binary
-    #[arg(long, default_value = "incus")]
-    incus: String,
-    /// Keep staging folders of failed jobs
-    #[arg(long)]
-    keep_failed: bool,
-    #[arg(long, default_value = "info")]
-    log_level: String,
-}
-
-fn parse_owner(spec: Option<&str>) -> Result<Owner> {
-    let Some(spec) = spec.filter(|s| !s.is_empty()) else {
-        return Ok(None);
-    };
-    let (user, group) = match spec.split_once(':') {
-        Some((u, g)) => (u, Some(g).filter(|g| !g.is_empty())),
-        None => (spec, None),
-    };
-    let u = nix::unistd::User::from_name(user)?.with_context(|| format!("unknown user {user:?}"))?;
-    let gid = match group {
-        Some(g) => nix::unistd::Group::from_name(g)?
-            .with_context(|| format!("unknown group {g:?}"))?
-            .gid,
-        None => u.gid,
-    };
-    Ok(Some((u.uid.as_raw(), gid.as_raw())))
-}
-
-/// Create `path` and any missing parents as 0755, owned by `owner`.
-pub fn makedirs_owned(path: &Path, owner: Owner) -> std::io::Result<()> {
-    use std::os::unix::fs::{PermissionsExt, chown};
-    let mut missing = Vec::new();
-    let mut p = path;
-    while !p.exists() {
-        missing.push(p);
-        match p.parent() {
-            Some(parent) => p = parent,
-            None => break,
-        }
-    }
-    std::fs::create_dir_all(path)?;
-    for p in missing {
-        std::fs::set_permissions(p, std::fs::Permissions::from_mode(0o755))?;
-        if let Some((uid, gid)) = owner {
-            chown(p, Some(uid), Some(gid))?;
-        }
-    }
-    Ok(())
+fn env_num<T: std::str::FromStr>(name: &str, default: T) -> T {
+    std::env::var(name).ok().and_then(|v| v.parse().ok()).unwrap_or(default)
 }
 
 #[tokio::main]
-async fn main() -> Result<()> {
-    let args = Args::parse();
-    tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::new(&args.log_level))
-        .init();
-
-    let mut env: BTreeMap<String, String> = args.env.into_iter().collect();
-    for name in &args.forward_env {
-        match std::env::var(name) {
-            Ok(v) if !v.is_empty() => {
-                env.insert(name.clone(), v);
-            }
-            _ => warn!("--forward-env {name}: not set in the environment"),
+async fn main() -> ExitCode {
+    match run().await {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("normalize-dataset failed: {e:#}");
+            ExitCode::FAILURE
         }
     }
-    if !args.datasets_root.is_absolute() {
-        bail!("--datasets-root must be absolute");
-    }
-    let settings = Settings {
-        datasets_root: args.datasets_root,
-        image: args.image,
-        command: args.command.split_whitespace().map(String::from).collect(),
-        profiles: args.profiles,
-        container_config: args.config.into_iter().collect(),
-        env,
-        timeout: args.timeout,
-        owner: parse_owner(args.owner.as_deref())?,
-        incus: args.incus,
-        keep_failed: args.keep_failed,
+}
+
+async fn run() -> Result<()> {
+    let ctx = Ctx {
+        raw: env_path("RAW_DIR", "/data/raw"),
+        out: env_path("OUT_DIR", "/data/out"),
+        scratch: env_path("SCRATCH", "/tmp/work"),
     };
-    if settings.command.is_empty() {
-        bail!("--command must not be empty");
-    }
-    makedirs_owned(&settings.normalized(), settings.owner)?;
+    std::fs::create_dir_all(&ctx.scratch).context("creating scratch dir")?;
+    let llm = llm::Llm::from_env()?;
+    let max_turns: usize = env_num("NORMALIZE_MAX_TURNS", 200);
+    let context_chars: usize = env_num("NORMALIZE_CONTEXT_CHARS", 400_000);
+    let tools = tools::definitions();
 
-    let manager = manager::Manager::start(settings, args.workers.max(1));
-    manager.recover().await;
-
-    let listener = tokio::net::TcpListener::bind(&args.bind)
-        .await
-        .with_context(|| format!("binding {}", args.bind))?;
-    info!(
-        "listening on {}; datasets {}, image {}",
-        args.bind,
-        manager.settings().datasets_root.display(),
-        manager.settings().image
+    let var = |k: &str| std::env::var(k).unwrap_or_default();
+    let overview = ctx.run("list_dir", &json!({"depth": 3})).await;
+    let overview = match overview {
+        Outcome::Text(t) => t,
+        _ => String::new(),
+    };
+    let task = format!(
+        "Normalize this dataset.\n\nsource: {}\nrepo id: {}\nrevision: {}\nRAW_DIR: {}\nOUT_DIR: {}\nSCRATCH: {}\n\n\
+         Overview of RAW_DIR (depth 3):\n{overview}\n\nStart by reading the dataset's documentation, then follow the method in your instructions.",
+        var("DATASET_SOURCE"),
+        var("DATASET_REPO_ID"),
+        var("DATASET_REVISION"),
+        ctx.raw.display(),
+        ctx.out.display(),
+        ctx.scratch.display(),
     );
-    axum::serve(listener, server::router(Arc::clone(&manager))).await?;
-    Ok(())
+    let mut messages: Vec<Value> = vec![
+        json!({"role": "system", "content": SYSTEM_PROMPT}),
+        json!({"role": "user", "content": task}),
+    ];
+
+    let (mut rejections, mut nudges) = (0u32, 0u32);
+    for turn in 1..=max_turns {
+        compact(&mut messages, context_chars);
+        // Near the end, tell the model to wrap up while it still can.
+        if turn == max_turns.saturating_sub(10) {
+            messages.push(json!({"role": "user", "content":
+                "You are running out of turns. Finish documenting and call `finish` now (or `fail` if it cannot be done)."}));
+        }
+        let msg = llm.chat(&messages, &tools).await?;
+        if let Some(text) = msg["content"].as_str().filter(|t| !t.trim().is_empty()) {
+            println!("[{turn}] assistant: {}", truncate(text, 1500, 500));
+        }
+        messages.push(msg.clone());
+
+        let calls = msg["tool_calls"].as_array().cloned().unwrap_or_default();
+        if calls.is_empty() {
+            nudges += 1;
+            anyhow::ensure!(nudges <= MAX_NUDGES, "the model stopped calling tools without finishing");
+            messages.push(json!({"role": "user", "content":
+                "Continue with tool calls. When the deliverable is complete call `finish`; if it cannot be done call `fail`."}));
+            continue;
+        }
+        for call in calls {
+            let id = call["id"].as_str().unwrap_or_default().to_string();
+            let name = call.pointer("/function/name").and_then(Value::as_str).unwrap_or_default().to_string();
+            let raw_args = call.pointer("/function/arguments").and_then(Value::as_str).unwrap_or("{}");
+            let args: Result<Value, _> = serde_json::from_str(if raw_args.trim().is_empty() { "{}" } else { raw_args });
+            println!("[{turn}] {name} {}", truncate(raw_args, 300, 100));
+            let outcome = match args {
+                Ok(a) => ctx.run(&name, &a).await,
+                Err(e) => Outcome::Text(format!("error: arguments are not valid JSON ({e}); call the tool again")),
+            };
+            let content = match outcome {
+                Outcome::Finish => {
+                    println!("finished after {turn} turns");
+                    return Ok(());
+                }
+                Outcome::Fail(reason) => anyhow::bail!("agent gave up: {reason}"),
+                Outcome::Text(t) => {
+                    if name == "finish" {
+                        rejections += 1;
+                        anyhow::ensure!(
+                            rejections < MAX_FINISH_REJECTIONS,
+                            "the deliverable still fails validation after {rejections} attempts:\n{t}"
+                        );
+                    }
+                    t
+                }
+            };
+            println!("    -> {}", truncate(&content, 400, 200).replace('\n', "\n       "));
+            messages.push(json!({"role": "tool", "tool_call_id": id, "content": content}));
+        }
+    }
+    anyhow::bail!("ran out of turns ({max_turns}) without finishing")
+}
+
+/// Keep the conversation inside the context budget by shortening old tool outputs. Messages are
+/// never removed, so assistant tool calls always keep their matching results.
+fn compact(messages: &mut [Value], budget: usize) {
+    let size = |m: &[Value]| m.iter().map(|v| v.to_string().len()).sum::<usize>();
+    if size(messages) <= budget {
+        return;
+    }
+    let keep_tail = 10.min(messages.len());
+    let end = messages.len() - keep_tail;
+    for m in messages.iter_mut().take(end).skip(2) {
+        if m["role"] == "tool" {
+            if let Some(c) = m["content"].as_str().filter(|c| c.len() > 400) {
+                m["content"] = Value::String(format!("{}\n[older output elided]", truncate(c, 300, 0)));
+            }
+        }
+        if size_hint(m) > 4000 && m["role"] == "assistant" {
+            // Large write_file bodies in old assistant turns.
+            if let Some(calls) = m.get_mut("tool_calls").and_then(Value::as_array_mut) {
+                for c in calls {
+                    if let Some(a) = c.pointer_mut("/function/arguments") {
+                        if a.as_str().is_some_and(|s| s.len() > 1000) {
+                            *a = Value::String("{\"elided\":true}".into());
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn size_hint(m: &Value) -> usize {
+    m.to_string().len()
 }

@@ -31,10 +31,22 @@
         nativeToolchain = fenix.packages.${system}.stable.completeToolchain;
       in
       {
-        # Server binary; the built frontend is passthru.web (MODEL_MANAGER_WEB_DIR).
-        packages.default = pkgs.callPackage ./nix/package.nix { };
-        # Dataset normalizer manager (services.modelManager.normalizer).
-        packages.normalize-agent = pkgs.callPackage ./normalize_agent/package.nix { };
+        # The three services: the server (the built frontend is passthru.web, i.e.
+        # MODEL_MANAGER_WEB_DIR), the container manager, and the in-container agent + its image.
+        packages =
+          let
+            model-manager = pkgs.callPackage ./nix/package.nix { };
+            manage-agent = pkgs.callPackage ./nix/manage-agent.nix { };
+            normalize-agent = pkgs.callPackage ./nix/normalize-agent.nix { };
+          in
+          {
+            default = model-manager;
+            inherit model-manager manage-agent normalize-agent;
+          }
+          // nixpkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
+            # OCI (docker archive) image; services.modelManager.normalizer imports it into Incus.
+            normalize-agent-image = pkgs.callPackage ./nix/normalize-agent-image.nix { inherit normalize-agent; };
+          };
 
         devShells.default = pkgs.mkShell {
           buildInputs = [
@@ -58,7 +70,7 @@
 
           shellHook = ''
             echo "model-manager dev shell"
-            echo "  cargo run            # API on http://127.0.0.1:8087"
+            echo "  cargo run -p model-manager   # API on http://127.0.0.1:8087"
             echo "  (cd web && pnpm i && pnpm dev)   # UI on http://127.0.0.1:5173"
           '';
         };

@@ -60,6 +60,10 @@ pub fn check_output(out: &Path, owner: Owner) -> Result<Summary, String> {
     if !fs::metadata(&readme).map(|m| m.is_file() && m.len() > 0).unwrap_or(false) {
         return Err("output has no README.md".into());
     }
+    let schema = out.join("schema.md");
+    if !fs::metadata(&schema).map(|m| m.is_file() && m.len() > 0).unwrap_or(false) {
+        return Err("output has no schema.md".into());
+    }
     if summary.parquet.is_empty() {
         return Err("output has no .parquet files".into());
     }
