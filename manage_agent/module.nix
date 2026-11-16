@@ -16,8 +16,10 @@ let
   cfg = mm.normalizer;
   normalizedDir = "${toString mm.datasetsDir}/normalized";
   incusPkg = config.virtualisation.incus.clientPackage or config.virtualisation.incus.package;
-  # `local:normalize-agent` -> the alias the image is imported under.
-  imageAlias = lib.removePrefix "local:" cfg.image;
+  registryPort = 5000;
+  registryAddr = "127.0.0.1:${toString registryPort}";
+  remoteName = "normalize-agent-registry";
+  imageRepo = "normalize-agent";
 in
 {
   options.services.modelManager.normalizer = {
@@ -41,8 +43,9 @@ in
       type = lib.types.bool;
       default = true;
       description = ''
-        Convert `imagePackage` to an Incus image and import it under the alias in `image`
-        whenever the package changes. Disable to supply the image yourself.
+        Serve `imagePackage` from a loopback registry (pushed again whenever the package changes)
+        and register it as the Incus OCI remote that `image` points at. Disable to supply the
+        image yourself.
       '';
     };
 
@@ -54,7 +57,7 @@ in
 
     image = lib.mkOption {
       type = lib.types.str;
-      default = "local:normalize-agent";
+      default = "${remoteName}:${imageRepo}";
       description = "Incus image the agent runs in (must contain `command`). The default is the one `importImage` creates.";
     };
 
@@ -125,19 +128,32 @@ in
 
     services.modelManager.datasetHook = lib.mkDefault "http://${cfg.bind}/jobs";
 
-    # OCI -> Incus: unpack the docker archive's layers into a rootfs and import it as a container
-    # image. (The image's PID 1 just sleeps; manage-agent `incus exec`s the agent into it.)
+    # Incus runs OCI images pulled from a registry (it shells out to skopeo). Serve the Nix-built
+    # image from a loopback-only registry and register that as an Incus OCI remote.
+    services.dockerRegistry = lib.mkIf cfg.importImage {
+      enable = true;
+      listenAddress = "127.0.0.1";
+      port = registryPort;
+    };
+    # Incus' skopeo pulls over plain http from the loopback registry.
+    virtualisation.containers = lib.mkIf cfg.importImage {
+      enable = lib.mkDefault true;
+      registries.insecure = [ registryAddr ];
+    };
+
     systemd.services.normalize-agent-image = lib.mkIf cfg.importImage {
-      description = "Import the normalize-agent OCI image into Incus";
+      description = "Publish the normalize-agent OCI image to the local registry for Incus";
       wantedBy = [ "multi-user.target" ];
       wants = [ "incus.service" ];
-      after = [ "incus.service" ];
+      after = [
+        "incus.service"
+        "docker-registry.service"
+      ];
+      requires = [ "docker-registry.service" ];
       before = [ "normalize-agent.service" ];
       path = [
         incusPkg
         pkgs.skopeo
-        pkgs.umoci
-        pkgs.gnutar
         pkgs.coreutils
       ];
       serviceConfig = {
@@ -146,26 +162,16 @@ in
         StateDirectory = "normalize-agent";
       };
       script = ''
-        stamp=/var/lib/normalize-agent/image-stamp
-        if [ "$(cat "$stamp" 2>/dev/null)" = ${lib.escapeShellArg "${cfg.imagePackage}"} ] \
-           && incus image info ${lib.escapeShellArg imageAlias} >/dev/null 2>&1; then
-          exit 0
+        if ! incus remote list --format csv | cut -d, -f1 | grep -qx ${lib.escapeShellArg remoteName}; then
+          # The URL's scheme is not used for pulls: Incus always runs `skopeo ... docker://host/image`.
+          incus remote add ${lib.escapeShellArg remoteName} https://${registryAddr} --protocol=oci
         fi
-        work=$(mktemp -d -p /var/lib/normalize-agent image.XXXXXX)
-        trap 'rm -rf "$work"' EXIT
-        skopeo copy docker-archive:${cfg.imagePackage} oci:"$work/oci":latest
-        umoci unpack --image "$work/oci":latest "$work/bundle"
-        cat > "$work/bundle/metadata.yaml" <<EOF
-        architecture: ${pkgs.stdenv.hostPlatform.parsed.cpu.name}
-        creation_date: $(date +%s)
-        properties:
-          description: normalize-agent (Nix-built OCI image)
-          os: nixos
-        EOF
-        tar -C "$work/bundle" --numeric-owner -cf "$work/image.tar" metadata.yaml rootfs
-        incus image delete ${lib.escapeShellArg imageAlias} 2>/dev/null || true
-        incus image import "$work/image.tar" --alias ${lib.escapeShellArg imageAlias}
-        echo -n ${lib.escapeShellArg "${cfg.imagePackage}"} > "$stamp"
+        stamp=/var/lib/normalize-agent/image-stamp
+        if [ "$(cat "$stamp" 2>/dev/null)" != ${lib.escapeShellArg "${cfg.imagePackage}"} ]; then
+          skopeo copy --dest-tls-verify=false \
+            docker-archive:${cfg.imagePackage} docker://${registryAddr}/${imageRepo}:latest
+          echo -n ${lib.escapeShellArg "${cfg.imagePackage}"} > "$stamp"
+        fi
       '';
     };
 

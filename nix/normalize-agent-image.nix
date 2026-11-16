@@ -1,7 +1,7 @@
 # OCI image (docker archive) for the normalize agent: the agent binary plus every tool its prompt
-# promises. The NixOS module converts it to an Incus image (see manage_agent/module.nix).
+# promises. The NixOS module serves it to Incus as an OCI image (see manage_agent/module.nix).
 #
-# PID 1 is a `sleep`: the manager starts the container and then `incus exec`s the agent into it.
+# The entrypoint is a `sleep`: the manager starts the container and then `incus exec`s the agent into it.
 {
   lib,
   dockerTools,

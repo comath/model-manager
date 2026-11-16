@@ -64,6 +64,74 @@ in
       description = "Where models can be downloaded to (MODEL_MANAGER_STORES). The first is the default.";
     };
 
+    defaultStore = lib.mkOption {
+      type = lib.types.nullOr lib.types.str;
+      default = null;
+      example = "slow";
+      description = "Store used when none is picked (MODEL_MANAGER_DEFAULT_STORE). Null keeps the app's own default: the store named `slow` if there is one, else the first.";
+    };
+
+    parallelFiles = lib.mkOption {
+      type = lib.types.nullOr lib.types.ints.positive;
+      default = null;
+      description = "Files fetched at once within one job (MODEL_MANAGER_PARALLEL_FILES); null uses the app default (2).";
+    };
+
+    containerRuntime = lib.mkOption {
+      type = lib.types.enum [
+        "podman"
+        "docker"
+      ];
+      default = "podman";
+      description = "Container CLI used to launch model runtimes (MODEL_MANAGER_CONTAINER_RUNTIME).";
+    };
+
+    tailscaleBind = lib.mkOption {
+      type = lib.types.nullOr lib.types.str;
+      default = null;
+      example = "100.64.0.1:8088";
+      description = "Extra unauthenticated plain-HTTP listen address, e.g. on the tailscale interface (MODEL_MANAGER_TAILSCALE_BIND).";
+    };
+
+    tailscaleServe = {
+      enable = lib.mkEnableOption "publishing the service on the tailnet with `tailscale serve` (use instead of `tls`)";
+      service = lib.mkOption {
+        type = lib.types.str;
+        default = "svc:model-manager";
+        example = "svc:models";
+        description = "Tailscale Service to publish as (https://<name>.<tailnet>.ts.net). Must be defined in the admin console, with this host allowed to host it.";
+      };
+      httpsPort = lib.mkOption {
+        type = lib.types.port;
+        default = 443;
+        description = "HTTPS port Tailscale listens on for the Service.";
+      };
+      target = lib.mkOption {
+        type = lib.types.str;
+        default = "http://${cfg.bind}";
+        defaultText = lib.literalExpression ''"http://''${config.services.modelManager.bind}"'';
+        description = "Backend Tailscale proxies to. Keep `bind` on loopback so only tailscaled can reach it.";
+      };
+    };
+
+    tls = {
+      cert = lib.mkOption {
+        type = lib.types.nullOr lib.types.path;
+        default = null;
+        description = "PEM server certificate (MODEL_MANAGER_TLS_CERT); needs `tls.key`.";
+      };
+      key = lib.mkOption {
+        type = lib.types.nullOr lib.types.path;
+        default = null;
+        description = "PEM server private key (MODEL_MANAGER_TLS_KEY). Pass a path string, not a store path, so the key stays out of the Nix store.";
+      };
+      clientCa = lib.mkOption {
+        type = lib.types.nullOr lib.types.path;
+        default = null;
+        description = "PEM CA that client certificates must chain to; enables mTLS (MODEL_MANAGER_CLIENT_CA).";
+      };
+    };
+
     datasetsDir = lib.mkOption {
       type = lib.types.path;
       default = "/var/lib/model-manager/datasets";
@@ -102,6 +170,26 @@ in
         assertion = cfg.stores != [ ];
         message = "services.modelManager.stores must list at least one store.";
       }
+      {
+        assertion = cfg.defaultStore == null || lib.any (s: s.name == cfg.defaultStore) cfg.stores;
+        message = "services.modelManager.defaultStore must name one of services.modelManager.stores.";
+      }
+      {
+        assertion = (cfg.tls.cert == null) == (cfg.tls.key == null);
+        message = "services.modelManager.tls.cert and tls.key must be set together.";
+      }
+      {
+        assertion = !cfg.tailscaleServe.enable || config.services.tailscale.enable;
+        message = "services.modelManager.tailscaleServe needs services.tailscale.enable = true.";
+      }
+      {
+        assertion = !cfg.tailscaleServe.enable || cfg.tls.cert == null;
+        message = "services.modelManager.tailscaleServe terminates HTTPS itself; unset tls.* (the backend must be plain HTTP).";
+      }
+      {
+        assertion = cfg.tls.clientCa == null || cfg.tls.cert != null;
+        message = "services.modelManager.tls.clientCa requires tls.cert and tls.key.";
+      }
     ];
 
     users.groups.${cfg.user} = { };
@@ -110,6 +198,33 @@ in
       group = cfg.user;
       description = "model-manager service account (owns the model stores)";
       home = "/var/lib/model-manager";
+    };
+
+    # `tailscale serve --bg` stores its config in tailscaled, and repeating the same command just
+    # replaces it, so running this on every boot/rebuild is safe. It fails until tailscaled is
+    # logged in, hence the retry.
+    systemd.services.model-manager-tailscale-serve = lib.mkIf cfg.tailscaleServe.enable {
+      description = "Publish model-manager on the tailnet (tailscale serve)";
+      wantedBy = [ "multi-user.target" ];
+      wants = [ "tailscaled.service" ];
+      after = [
+        "tailscaled.service"
+        "model-manager.service"
+      ];
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+        Restart = "on-failure";
+        RestartSec = 10;
+        ExecStart = lib.escapeShellArgs [
+          (lib.getExe config.services.tailscale.package)
+          "serve"
+          "--bg"
+          "--service=${cfg.tailscaleServe.service}"
+          "--https=${toString cfg.tailscaleServe.httpsPort}"
+          cfg.tailscaleServe.target
+        ];
+      };
     };
 
     systemd.services.model-manager = {
@@ -123,6 +238,7 @@ in
         MODEL_MANAGER_STORES = lib.concatMapStringsSep "," (s: "${s.name}=${s.path}") cfg.stores;
         MODEL_MANAGER_DATASETS_DIR = toString cfg.datasetsDir;
         MODEL_MANAGER_BIND = cfg.bind;
+        MODEL_MANAGER_CONTAINER_RUNTIME = cfg.containerRuntime;
         MODEL_MANAGER_DATA_DIR = "/var/lib/model-manager";
         MODEL_MANAGER_WEB_DIR = "${cfg.package.web}";
         HOME = "/var/lib/model-manager";
@@ -130,6 +246,22 @@ in
       }
       // lib.optionalAttrs (cfg.datasetHook != null) {
         MODEL_MANAGER_DATASET_HOOK = cfg.datasetHook;
+      }
+      // lib.optionalAttrs (cfg.defaultStore != null) {
+        MODEL_MANAGER_DEFAULT_STORE = cfg.defaultStore;
+      }
+      // lib.optionalAttrs (cfg.parallelFiles != null) {
+        MODEL_MANAGER_PARALLEL_FILES = toString cfg.parallelFiles;
+      }
+      // lib.optionalAttrs (cfg.tailscaleBind != null) {
+        MODEL_MANAGER_TAILSCALE_BIND = cfg.tailscaleBind;
+      }
+      // lib.optionalAttrs (cfg.tls.cert != null) {
+        MODEL_MANAGER_TLS_CERT = toString cfg.tls.cert;
+        MODEL_MANAGER_TLS_KEY = toString cfg.tls.key;
+      }
+      // lib.optionalAttrs (cfg.tls.clientCa != null) {
+        MODEL_MANAGER_CLIENT_CA = toString cfg.tls.clientCa;
       };
 
       serviceConfig = {

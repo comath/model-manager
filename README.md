@@ -46,6 +46,38 @@ services.modelManager = {
 };
 ```
 
+Other options, each mapped to the env var in the Configuration table below:
+
+| Option | Env var |
+| --- | --- |
+| `defaultStore` | `MODEL_MANAGER_DEFAULT_STORE` (unset: the store named `slow`, else the first) |
+| `datasetsDir` | `MODEL_MANAGER_DATASETS_DIR` |
+| `parallelFiles`, `containerRuntime` | `MODEL_MANAGER_PARALLEL_FILES`, `MODEL_MANAGER_CONTAINER_RUNTIME` |
+| `tls.cert`, `tls.key`, `tls.clientCa` | `MODEL_MANAGER_TLS_CERT`, `_TLS_KEY`, `_CLIENT_CA` (the last enables mTLS) |
+| `tailscaleBind` | `MODEL_MANAGER_TAILSCALE_BIND`: a second, unauthenticated plain-HTTP listener |
+| `normalizer.*` | the optional [dataset normalizer](manage_agent/README.md); off unless `normalizer.enable` |
+
+### Publishing on a tailnet
+
+Instead of `tls`, let Tailscale terminate HTTPS and keep the app on loopback:
+
+```nix
+services.tailscale.enable = true;
+services.modelManager = {
+  bind = "127.0.0.1:8087";
+  tailscaleServe.enable = true;        # https://model-manager.<tailnet>.ts.net
+  # tailscaleServe.service = "svc:model-manager"; httpsPort = 443; target = "http://<bind>";
+};
+```
+
+This adds a `model-manager-tailscale-serve` oneshot that runs
+`tailscale serve --bg --service=svc:model-manager --https=443 http://127.0.0.1:8087` (idempotent;
+retried until tailscaled is logged in). One-time setup in the Tailscale admin console: define the
+Service `svc:model-manager` (port 443), tag this host and allow the tag to host it, and enable
+MagicDNS/HTTPS. The app has **no auth**: anyone who can reach the host can delete models and
+launch containers, so restrict access with an ACL. Remove it with
+`tailscale serve clear svc:model-manager`. Not combinable with `tls.*`.
+
 When `web/pnpm-lock.yaml` changes, update the `hash` in `nix/package.nix` (set it to
 `lib.fakeHash`, run `nix build`, copy the hash from the error).
 
@@ -57,6 +89,9 @@ When `web/pnpm-lock.yaml` changes, update the `hash` in `nix/package.nix` (set i
   *show all files* for the rest.
 - **Download** — several files at a time, resumable (`*.part` sidecars, HTTP `Range`),
   cancellable, with per-file progress streamed to the browser over SSE.
+- **Bulk clone** — the clone box on the search page takes one repo per line (`owner/name` or a
+  Hugging Face / Kaggle / GitHub URL; blank lines and `#` comments are ignored), or load a `.txt`
+  of them. Each line becomes a download job; lines that fail stay in the box with the error.
 - **Library** — what is on disk, its size, an estimated VRAM footprint (weight bytes; excludes
   KV-cache/activation overhead), and the bare-metal command to serve it (`vllm serve <dir>` or
   `llama-server -m <file>`). Delete removes the directory.
@@ -99,8 +134,8 @@ Each model directory carries a `model-manager.json` sidecar; that is what the li
 
 Set `MODEL_MANAGER_STORES=fast=/fast/models,slow=/slow/models` to download into named roots
 instead of `<data>/models`. Each store gets the same `<kind>/<owner>/<name>` layout. The model
-page shows a picker (the last choice is remembered in the browser), the first store is the
-default, and the library lists every store, tagging each entry with where it lives. The same repo
+page shows a picker (the last choice is remembered in the browser), the store named `slow` is the
+default (override with `MODEL_MANAGER_DEFAULT_STORE=<name>`; with no match, the first store is used), and the library lists every store, tagging each entry with where it lives. The same repo
 can sit in more than one store; delete, recipes and launch act on the copy you pick.
 
 ### Datasets
@@ -133,7 +168,10 @@ Set `MODEL_MANAGER_DATASET_HOOK` to have each finished dataset download POSTed s
 | `MODEL_MANAGER_DATASET_HOOK` | — | URL POSTed `{source, repo_id, revision, path}` after each completed dataset download |
 | `KAGGLE_USERNAME` + `KAGGLE_KEY`, or `KAGGLE_API_TOKEN` | — | Kaggle credentials (optional for public datasets) |
 | `GITHUB_TOKEN` / `GH_TOKEN` | — | GitHub token (optional) |
-| `MODEL_MANAGER_STORES` | — | `name=/abs/path,…` download targets; replaces `<data>/models`, first is the default |
+| `MODEL_MANAGER_STORES` | — | `name=/abs/path,…` download targets; replaces `<data>/models` |
+| `MODEL_MANAGER_DEFAULT_STORE` | `slow` | Store used when none is chosen; falls back to the first store if no store has this name |
+| `MODEL_MANAGER_TLS_CERT` / `_TLS_KEY` / `_CLIENT_CA` | — | PEM paths for TLS; adding a client CA enables mTLS |
+| `MODEL_MANAGER_TAILSCALE_BIND` | — | Extra unauthenticated plain-HTTP listen address (alias `MODEL_MANAGER_HTTP_BIND`) |
 | `MODEL_MANAGER_BIND` | `127.0.0.1:8087` | Listen address |
 | `MODEL_MANAGER_PARALLEL_FILES` | `2` | Files fetched concurrently per job |
 | `MODEL_MANAGER_WEB_DIR` | `web/dist` | Built frontend to serve at `/` |

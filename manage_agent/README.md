@@ -60,10 +60,12 @@ It binds `127.0.0.1:8088` with no auth; only model-manager on the same host shou
 ## Image
 
 The container image is built by Nix: `packages.<system>.normalize-agent-image` is an OCI (docker
-archive) image with the agent and its tools (see `nix/normalize-agent-image.nix`). With
-`normalizer.importImage` (default) the module's `normalize-agent-image.service` unpacks it
-(skopeo + umoci) and imports it into Incus as `local:normalize-agent` whenever the package changes.
-Its PID 1 is just `sleep infinity`; the manager `incus exec`s the agent into it.
+archive) image with the agent and its tools (see `nix/normalize-agent-image.nix`). Incus runs OCI
+images from a registry (it calls skopeo), so with `normalizer.importImage` (default) the module
+runs a loopback-only registry on `127.0.0.1:5000`, `normalize-agent-image.service` pushes the image
+there whenever the package changes, and registers it as the Incus OCI remote
+`normalize-agent-registry`. The default `image` is `normalize-agent-registry:normalize-agent`.
+The image's entrypoint is `sleep infinity`; the manager `incus exec`s the agent into it.
 
 ## NixOS
 

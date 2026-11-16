@@ -128,6 +128,10 @@ impl Config {
             }),
             _ => vec![Store { name: "default".into(), root: data_dir.join("models") }],
         };
+        let stores = with_default_store(
+            stores,
+            &env_nonempty("MODEL_MANAGER_DEFAULT_STORE").unwrap_or_else(|| "slow".into()),
+        );
 
         let datasets_root = std::env::var_os("MODEL_MANAGER_DATASETS_DIR")
             .map(PathBuf::from)
@@ -197,6 +201,16 @@ impl Config {
     }
 }
 
+/// Move the store called `default` to the front (the first store is the default everywhere).
+/// If no store has that name, the order is left as configured.
+fn with_default_store(mut stores: Vec<Store>, default: &str) -> Vec<Store> {
+    if let Some(i) = stores.iter().position(|s| s.name == default) {
+        let store = stores.remove(i);
+        stores.insert(0, store);
+    }
+    stores
+}
+
 /// Parse `name=/path,name=/path`. Names are short identifiers; paths must be absolute.
 fn parse_stores(raw: &str) -> Result<Vec<Store>, String> {
     let mut stores: Vec<Store> = Vec::new();
@@ -259,6 +273,15 @@ pub fn safe_join(base: &Path, rel: &str) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn default_store_moves_to_front() {
+        let stores = parse_stores("fast=/fast/models,slow=/slow/models").unwrap();
+        let names: Vec<_> =
+            with_default_store(stores.clone(), "slow").into_iter().map(|s| s.name).collect();
+        assert_eq!(names, ["slow", "fast"]);
+        assert_eq!(with_default_store(stores, "nope")[0].name, "fast");
+    }
 
     #[test]
     fn test_tls_and_mtls_helpers() {
