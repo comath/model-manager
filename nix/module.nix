@@ -34,7 +34,14 @@ let
   '';
 in
 {
-  imports = [ (import ../manage_agent/module.nix self) ];
+  imports = [
+    (import ../manage_agent/module.nix self)
+    (lib.mkRemovedOptionModule [
+      "services"
+      "modelManager"
+      "parallelFiles"
+    ] "Use services.modelManager.maxDownloads, a limit across all downloads instead of per job.")
+  ];
 
   options.services.modelManager = {
     enable = lib.mkEnableOption "model-manager, the Hugging Face model downloader";
@@ -71,10 +78,11 @@ in
       description = "Store used when none is picked (MODEL_MANAGER_DEFAULT_STORE). Null keeps the app's own default: the store named `slow` if there is one, else the first.";
     };
 
-    parallelFiles = lib.mkOption {
+    maxDownloads = lib.mkOption {
       type = lib.types.nullOr lib.types.ints.positive;
       default = null;
-      description = "Files fetched at once within one job (MODEL_MANAGER_PARALLEL_FILES); null uses the app default (2).";
+      example = 8;
+      description = "Downloads running at once across all jobs (MODEL_MANAGER_MAX_DOWNLOADS): one per HTTP file, one per git clone. Null uses the app default (4).";
     };
 
     containerRuntime = lib.mkOption {
@@ -233,6 +241,11 @@ in
       wants = [ "network-online.target" ];
       after = [ "network-online.target" ];
       unitConfig.RequiresMountsFor = map (s: s.path) cfg.stores;
+      # GitHub datasets are cloned with git; LFS files need git-lfs.
+      path = [
+        pkgs.git
+        pkgs.git-lfs
+      ];
 
       environment = {
         MODEL_MANAGER_STORES = lib.concatMapStringsSep "," (s: "${s.name}=${s.path}") cfg.stores;
@@ -250,8 +263,8 @@ in
       // lib.optionalAttrs (cfg.defaultStore != null) {
         MODEL_MANAGER_DEFAULT_STORE = cfg.defaultStore;
       }
-      // lib.optionalAttrs (cfg.parallelFiles != null) {
-        MODEL_MANAGER_PARALLEL_FILES = toString cfg.parallelFiles;
+      // lib.optionalAttrs (cfg.maxDownloads != null) {
+        MODEL_MANAGER_MAX_DOWNLOADS = toString cfg.maxDownloads;
       }
       // lib.optionalAttrs (cfg.tailscaleBind != null) {
         MODEL_MANAGER_TAILSCALE_BIND = cfg.tailscaleBind;

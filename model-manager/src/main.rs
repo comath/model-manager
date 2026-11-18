@@ -1,7 +1,9 @@
 mod api;
 mod config;
+mod db;
 mod download;
 mod error;
+mod git;
 mod gpu;
 mod hf;
 mod mtls;
@@ -46,8 +48,13 @@ async fn main() -> anyhow::Result<()> {
         .build()?;
     let gpus = gpu::discover().await;
     tracing::info!(count = gpus.len(), "GPU discovery complete");
+    tokio::fs::create_dir_all(&cfg.data_dir).await?;
+    let db_path = cfg.data_dir.join("model-manager.sqlite");
+    let db = db::Db::open(&db_path)
+        .map_err(|err| anyhow::anyhow!("opening {}: {err}", db_path.display()))?;
     let manager =
-        Arc::new(Manager::new(cfg.clone(), HfClient::new(http, cfg.hf_token.clone()), gpus));
+        Arc::new(Manager::new(cfg.clone(), HfClient::new(http, cfg.hf_token.clone()), gpus, db));
+    manager.restore().await;
 
     let index = cfg.web_dir.join("index.html");
     let app = Router::new()

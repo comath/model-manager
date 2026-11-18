@@ -52,7 +52,7 @@ async fn get_config(State(mgr): Ctx) -> Json<serde_json::Value> {
         "models_dir": cfg.stores[0].root.display().to_string(),
         "datasets_dir": cfg.datasets_store.root.display().to_string(),
         "stores": stores,
-        "parallel_files": cfg.parallel_files,
+        "max_downloads": cfg.max_downloads,
         "has_hf_token": cfg.hf_token.is_some(),
         "has_kaggle_credentials": cfg.kaggle.is_some(),
         "has_github_token": cfg.github_token.is_some(),
@@ -158,7 +158,8 @@ struct CloneRequest {
     store: Option<String>,
 }
 
-/// One-shot "give me this repo": resolve it, select every relevant file, start the job.
+/// One-shot "give me this repo" (the bulk clone box): resolve it and download every file in it.
+/// GitHub repos are cloned whole with git, so they skip the file listing.
 ///
 /// The provider must be explicit: either a URL that names it, or `source` in the request. A bare
 /// `owner/name` is ambiguous (the same id can exist on several sites), so we never guess.
@@ -210,10 +211,14 @@ async fn clone_repo(
 
     let requested =
         body.revision.or(parsed.revision).map(|r| r.trim().to_string()).filter(|r| !r.is_empty());
-    let (_, revision, files) =
-        fetch_repo(&mgr, kind, source, &parsed.repo_id, requested.as_deref()).await?;
-    let files: Vec<(String, u64)> =
-        files.into_iter().filter(|f| f.relevant).map(|f| (f.path, f.size)).collect();
+    let (revision, files) = if source == Source::Github {
+        let (_, revision) = mgr.hub().info(source, &parsed.repo_id, requested.as_deref()).await?;
+        (revision, Vec::new())
+    } else {
+        let (_, revision, files) =
+            fetch_repo(&mgr, kind, source, &parsed.repo_id, requested.as_deref()).await?;
+        (revision, files.into_iter().map(|f| (f.path, f.size)).collect())
+    };
     let job = mgr
         .enqueue(NewJob {
             repo_id: parsed.repo_id,

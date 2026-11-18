@@ -78,7 +78,7 @@ export interface ServerConfig {
   models_dir: string;
   datasets_dir: string;
   stores: { name: string; root: string }[];
-  parallel_files: number;
+  max_downloads: number;
   has_hf_token: boolean;
   has_kaggle_credentials: boolean;
   has_github_token: boolean;

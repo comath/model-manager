@@ -9,6 +9,8 @@ pub enum AppError {
     #[error("{0}")]
     NotFound(String),
     #[error("{0}")]
+    Conflict(String),
+    #[error("{0}")]
     Upstream(String),
     #[error("io: {0}")]
     Io(#[from] std::io::Error),
@@ -23,6 +25,7 @@ impl IntoResponse for AppError {
         let status = match &self {
             AppError::BadRequest(_) => StatusCode::BAD_REQUEST,
             AppError::NotFound(_) => StatusCode::NOT_FOUND,
+            AppError::Conflict(_) => StatusCode::CONFLICT,
             AppError::Upstream(_) => StatusCode::BAD_GATEWAY,
             AppError::Io(_) | AppError::Http(_) => StatusCode::INTERNAL_SERVER_ERROR,
         };

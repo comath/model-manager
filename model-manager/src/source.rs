@@ -243,10 +243,10 @@ impl Hub {
                 let url =
                     format!("{GITHUB_API}/repos/{repo_id}/git/trees/{}?recursive=1", enc(revision));
                 let v = self.json(self.github_get(&url), source).await?;
+                // Only the repo page shows this list; downloads clone the whole repo with git,
+                // so a list GitHub cut short is still worth showing.
                 if v.get("truncated").and_then(Value::as_bool).unwrap_or(false) {
-                    return Err(AppError::Upstream(
-                        "this repo has too many files for GitHub to list; clone it instead".into(),
-                    ));
+                    tracing::info!(%repo_id, "GitHub truncated the file list");
                 }
                 v.get("tree")
                     .and_then(Value::as_array)

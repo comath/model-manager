@@ -162,9 +162,8 @@ async fn proxy_openai_request(
     let status = res.status();
 
     if is_stream && status.is_success() {
-        let stream = res
-            .bytes_stream()
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e));
+        let stream =
+            res.bytes_stream().map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e));
         let body = Body::from_stream(stream);
         Response::builder()
             .status(status)
@@ -250,4 +249,3 @@ mod tests {
         assert_eq!(payload.stream, Some(true));
     }
 }
-

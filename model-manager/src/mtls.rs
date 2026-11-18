@@ -1,8 +1,8 @@
 use crate::config::Config;
 use crate::error::{AppError, AppResult};
+use rustls::ServerConfig;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use rustls::server::WebPkiClientVerifier;
-use rustls::ServerConfig;
 use std::fs::File;
 use std::io::BufReader;
 use std::sync::Arc;
@@ -114,5 +114,3 @@ pub async fn serve_tls(
         });
     }
 }
-
-

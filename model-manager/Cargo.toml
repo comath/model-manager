@@ -27,5 +27,6 @@ rustls-pemfile = "2.2"
 rustls-pki-types = "1.10"
 hyper-util = { version = "0.1", features = ["full"] }
 tower = { version = "0.5", features = ["util"] }
+rusqlite = { version = "0.43.0", features = ["bundled"] }
 
 

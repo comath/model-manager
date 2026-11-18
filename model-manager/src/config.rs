@@ -83,8 +83,9 @@ pub struct Config {
     pub bind: String,
     /// Optional HuggingFace token, used for gated/private repos.
     pub hf_token: Option<String>,
-    /// How many files of a single job are fetched at once.
-    pub parallel_files: usize,
+    /// Downloads running at once across all jobs (`MODEL_MANAGER_MAX_DOWNLOADS`): each HTTP file
+    /// takes one slot, a whole git clone takes one.
+    pub max_downloads: usize,
     /// Directory containing the built frontend, served at `/`.
     pub web_dir: PathBuf,
     /// Container CLI used to launch/stop/inspect model runtimes (`podman` or `docker`).
@@ -152,11 +153,11 @@ impl Config {
             data_dir,
             bind: std::env::var("MODEL_MANAGER_BIND").unwrap_or_else(|_| "127.0.0.1:8087".into()),
             hf_token,
-            parallel_files: std::env::var("MODEL_MANAGER_PARALLEL_FILES")
+            max_downloads: std::env::var("MODEL_MANAGER_MAX_DOWNLOADS")
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .filter(|n| *n > 0)
-                .unwrap_or(2),
+                .unwrap_or(4),
             web_dir: std::env::var_os("MODEL_MANAGER_WEB_DIR")
                 .map(PathBuf::from)
                 .unwrap_or_else(|| PathBuf::from("web/dist")),
@@ -293,7 +294,7 @@ mod tests {
             github_token: None,
             bind: "127.0.0.1:8087".into(),
             hf_token: None,
-            parallel_files: 2,
+            max_downloads: 4,
             web_dir: PathBuf::from("web/dist"),
             container_runtime: "podman".into(),
             tls_cert: None,
@@ -345,7 +346,7 @@ mod tests {
             github_token: None,
             bind: "127.0.0.1:8087".into(),
             hf_token: None,
-            parallel_files: 2,
+            max_downloads: 4,
             web_dir: PathBuf::from("web/dist"),
             container_runtime: "podman".into(),
             tls_cert: None,

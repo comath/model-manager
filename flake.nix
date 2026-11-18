@@ -51,6 +51,8 @@
         devShells.default = pkgs.mkShell {
           buildInputs = [
             nativeToolchain
+            pkgs.git
+            pkgs.git-lfs
 
             # Frontend
             pkgs.nodejs_22

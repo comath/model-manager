@@ -55,7 +55,7 @@ function Footer() {
       <span>
         models in <code>{config.models_dir}</code>
       </span>
-      <span>{config.parallel_files} parallel files</span>
+      <span>{config.max_downloads} downloads at once</span>
       <span className={config.has_hf_token ? "ok" : "warn"}>
         {config.has_hf_token ? "HF token loaded" : "no HF token — gated repos will fail"}
       </span>

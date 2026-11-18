@@ -33,6 +33,8 @@ export function ModelPage() {
   const [error, setError] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
   const [store, setStore] = useState<string | null>(readStoredStore);
+  // GitHub repos are always cloned whole with git (LFS included); there is nothing to pick.
+  const wholeRepo = source === "github";
 
   useEffect(() => {
     let live = true;
@@ -82,9 +84,11 @@ export function ModelPage() {
         source,
         revision: detail.revision,
         store: (detail.stores.find((s) => s.name === store) ?? detail.stores[0])?.name,
-        files: detail.files
-          .filter((f) => selected.has(f.path))
-          .map((f) => ({ path: f.path, size: f.size })),
+        files: wholeRepo
+          ? []
+          : detail.files
+              .filter((f) => selected.has(f.path))
+              .map((f) => ({ path: f.path, size: f.size })),
       });
       await refresh();
       navigate("/downloads");
@@ -176,6 +180,11 @@ export function ModelPage() {
       <div className="panel">
         <div className="panel-head">
           <h2>Files</h2>
+          {wholeRepo ? (
+            <span className="muted small">
+              cloned whole with git; LFS files show their pointer size here
+            </span>
+          ) : (
           <div className="row-actions">
             <label className="toggle">
               <input
@@ -196,11 +205,18 @@ export function ModelPage() {
               Clear
             </button>
           </div>
+          )}
         </div>
 
         <ul className="file-list">
-          {files.map((file) => (
+          {(wholeRepo ? detail.files : files).map((file) => (
             <li key={file.path}>
+              {wholeRepo ? (
+                <span className="file">
+                  <span className="file-path">{file.path}</span>
+                  <span className="file-size">{formatBytes(file.size)}</span>
+                </span>
+              ) : (
               <label className={selected.has(file.path) ? "file selected" : "file"}>
                 <input
                   type="checkbox"
@@ -211,6 +227,7 @@ export function ModelPage() {
                 {!file.relevant && <span className="tag">extra</span>}
                 <span className="file-size">{formatBytes(file.size)}</span>
               </label>
+              )}
             </li>
           ))}
         </ul>
@@ -219,13 +236,19 @@ export function ModelPage() {
       {error && <p className="panel error">{error}</p>}
 
       <div className="panel action-bar">
-        <span>
-          <strong>{selected.size}</strong> files · <strong>{formatBytes(totalBytes)}</strong>
-        </span>
+        {wholeRepo ? (
+          <span>
+            <strong>Whole repository</strong> · {detail.files.length} files listed
+          </span>
+        ) : (
+          <span>
+            <strong>{selected.size}</strong> files · <strong>{formatBytes(totalBytes)}</strong>
+          </span>
+        )}
         <button
           type="button"
           className="button primary"
-          disabled={selected.size === 0 || starting}
+          disabled={(!wholeRepo && selected.size === 0) || starting}
           onClick={start}
         >
           {starting ? "Starting…" : "Download"}

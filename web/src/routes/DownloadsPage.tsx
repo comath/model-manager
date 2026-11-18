@@ -41,7 +41,9 @@ function JobCard({ job }: { job: Job }) {
 
       <Progress value={job.downloaded_bytes} total={job.total_bytes} />
       <p className="muted small">
-        {formatBytes(job.downloaded_bytes)} of {formatBytes(job.total_bytes)}
+        {job.total_bytes > 0
+          ? `${formatBytes(job.downloaded_bytes)} of ${formatBytes(job.total_bytes)}`
+          : `${formatBytes(job.downloaded_bytes)} so far`}
       </p>
       {job.error && <p className="error-text">{job.error}</p>}
       {error && <p className="error-text">{error}</p>}

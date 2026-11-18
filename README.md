@@ -52,7 +52,7 @@ Other options, each mapped to the env var in the Configuration table below:
 | --- | --- |
 | `defaultStore` | `MODEL_MANAGER_DEFAULT_STORE` (unset: the store named `slow`, else the first) |
 | `datasetsDir` | `MODEL_MANAGER_DATASETS_DIR` |
-| `parallelFiles`, `containerRuntime` | `MODEL_MANAGER_PARALLEL_FILES`, `MODEL_MANAGER_CONTAINER_RUNTIME` |
+| `maxDownloads`, `containerRuntime` | `MODEL_MANAGER_MAX_DOWNLOADS`, `MODEL_MANAGER_CONTAINER_RUNTIME` |
 | `tls.cert`, `tls.key`, `tls.clientCa` | `MODEL_MANAGER_TLS_CERT`, `_TLS_KEY`, `_CLIENT_CA` (the last enables mTLS) |
 | `tailscaleBind` | `MODEL_MANAGER_TAILSCALE_BIND`: a second, unauthenticated plain-HTTP listener |
 | `normalizer.*` | the optional [dataset normalizer](manage_agent/README.md); off unless `normalizer.enable` |
@@ -87,11 +87,16 @@ When `web/pnpm-lock.yaml` changes, update the `hash` in `nix/package.nix` (set i
 - **Pick files** — the file list is pre-checked with exactly what the runtime needs
   (weights + tokenizer/config for vLLM, the `.gguf` you choose for llama.cpp); tick
   *show all files* for the rest.
-- **Download** — several files at a time, resumable (`*.part` sidecars, HTTP `Range`),
+- **Download** — up to `MODEL_MANAGER_MAX_DOWNLOADS` files at once across all jobs, resumable (`*.part` sidecars, HTTP `Range`),
   cancellable, with per-file progress streamed to the browser over SSE.
+- **Survives restarts** — jobs are kept in SQLite (`<data>/model-manager.sqlite`). After a
+  restart, queued and interrupted jobs start again: HTTP files resume from their `.part`, an
+  interrupted git clone starts over (its leftover hidden folder is removed). Finished jobs stay
+  in the Downloads history (newest 500) until you clear them.
 - **Bulk clone** — the clone box on the search page takes one repo per line (`owner/name` or a
   Hugging Face / Kaggle / GitHub URL; blank lines and `#` comments are ignored), or load a `.txt`
-  of them. Each line becomes a download job; lines that fail stay in the box with the error.
+  of them. Each line becomes a download job for **every** file in the repo (no relevance filter);
+  lines that fail stay in the box with the error.
 - **Library** — what is on disk, its size, an estimated VRAM footprint (weight bytes; excludes
   KV-cache/activation overhead), and the bare-metal command to serve it (`vllm serve <dir>` or
   `llama-server -m <file>`). Delete removes the directory.
@@ -149,9 +154,13 @@ in the library alongside models (without a container recipe).
 - **Kaggle** — public datasets work without credentials. For private ones set `KAGGLE_USERNAME` +
   `KAGGLE_KEY` (or `KAGGLE_API_TOKEN`); `~/.kaggle/kaggle.json` is also read. The revision is the
   dataset version number.
-- **GitHub** — any repo, treated as a dataset (search is by stars). Files are fetched from
-  `raw.githubusercontent.com` at the repo's default branch. Set `GITHUB_TOKEN` (or `GH_TOKEN`) for
-  private repos and to lift the 10 requests/minute unauthenticated search limit.
+- **GitHub** — any repo, treated as a dataset (search is by stars). Always downloaded whole: a
+  shallow `git fetch` of the revision (default branch unless you give one), then `git lfs pull`,
+  so LFS-tracked files arrive as real data, not pointer stubs. It lands in a hidden sibling folder
+  and is swapped in only when complete; `.git` is removed afterwards. The service needs `git` and
+  `git-lfs` on `PATH` (the NixOS module adds them). Set `GITHUB_TOKEN` (or `GH_TOKEN`) for private
+  repos and to lift the 10 requests/minute unauthenticated search limit; git gets it through
+  environment config, never on the command line.
 
 With the NixOS module, put these in the `environmentFile`.
 
@@ -173,7 +182,7 @@ Set `MODEL_MANAGER_DATASET_HOOK` to have each finished dataset download POSTed s
 | `MODEL_MANAGER_TLS_CERT` / `_TLS_KEY` / `_CLIENT_CA` | — | PEM paths for TLS; adding a client CA enables mTLS |
 | `MODEL_MANAGER_TAILSCALE_BIND` | — | Extra unauthenticated plain-HTTP listen address (alias `MODEL_MANAGER_HTTP_BIND`) |
 | `MODEL_MANAGER_BIND` | `127.0.0.1:8087` | Listen address |
-| `MODEL_MANAGER_PARALLEL_FILES` | `2` | Files fetched concurrently per job |
+| `MODEL_MANAGER_MAX_DOWNLOADS` | `4` | Downloads at once across all jobs (one per HTTP file, one per git clone); queued files wait |
 | `MODEL_MANAGER_WEB_DIR` | `web/dist` | Built frontend to serve at `/` |
 | `MODEL_MANAGER_CONTAINER_RUNTIME` | `podman` | Binary used to launch/stop/inspect model containers |
 | `HF_TOKEN` | — | Required for gated/private repos |
